@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="https://unicons.iconscout.com/release/v4.0.8/css/line.css">
+    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+    <title>A2 Website</title>
+    <script>
+
+
+        window.addEventListener("load", () => {
+
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/api/session-status", true);
+            xhr.withCredentials = true;
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            // Toggle login and content visibility based on session data
+                            if (data.loggedIn) {
+                                document
+                                    .getElementById("login")
+                                    .classList.add("hidden");
+                                document
+                                    .getElementById("content")
+                                    .classList.remove("hidden");
+                                if (data.username) {
+                                    currentUsername = data.username;
+                                    document.getElementById("userAvatar").src =
+                                        `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUsername)}`;
+                                }
+                                const savedUsername = sessionStorage.getItem('client_uname');
+                                if (savedUsername) {
+                                    currentUsername = savedUsername;
+                                    document.getElementById("userAvatar").src =
+                                        `https://ui-avatars.com/api/?name=${encodeURIComponent(savedUsername)}`;
+                                }
+                                refreshFiles()
+                            } else {
+                                document
+                                    .getElementById("login")
+                                    .classList.remove("hidden");
+                                document
+                                    .getElementById("content")
+                                    .classList.add("hidden");
+                            }
+                        } catch (e) {
+                            console.error(
+                                "Unable to parse JSON from session-status:",
+                                e,
+                            );
+                        }
+                    } else {
+                        console.error(
+                            "Session check failed with status:",
+                            xhr.status,
+                        );
+                    }
+                }
+            };
+            xhr.send();
+
+            // Prevent default form submission and attach login handler
+            var loginForm = document.getElementById("loginform");
+            if (loginForm) {
+                loginForm.addEventListener("submit", function (event) {
+                    event.preventDefault();
+                    login();
+                });
+            }
+        });
+
+
+        function login() {
+            var xhr = new XMLHttpRequest();
+            var data = {
+                username: document.getElementById("username").value,
+            };
+            var body = JSON.stringify(data);
+
+            xhr.open("POST", "/api/login", true);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.withCredentials = true;
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+
+                        console.log(
+                            "Response from server:",
+                            xhr.responseText,
+                        );
+                        sessionStorage.setItem('client_uname', data.username);
+                        document.getElementById("userAvatar").src =
+                            `https://ui-avatars.com/api/?name=${encodeURIComponent(data.username)}`;
+                        // Hide the login div and show protected content on success
+                        document
+                            .getElementById("login")
+                            .classList.add("hidden");
+                        document
+                            .getElementById("content")
+                            .classList.remove("hidden");
+                        refreshFiles(); // Load files
+                    } else {
+                        console.error("Error: HTTP Status", xhr.status);
+                    }
+                }
+            };
+            xhr.send(body);
+        }
+
+        function deleteFile(filename) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("DELETE", "/api/delete?file=" + encodeURIComponent(filename), true);
+            xhr.withCredentials = true;
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        console.log("File deleted successfully:", filename);
+                        refreshFiles()
+                    } else {
+                        const errorMessage = JSON.parse(xhr.responseText.replace(/'/g, '"'));
+                        // console.error("Error deleting file: HTTP Status", errorMessage.message);
+                        alert(`${errorMessage.message}`);
+                    }
+                }
+            };
+
+            xhr.send();
+        }
+
+        function refreshFiles() {
+            var xhr = new XMLHttpRequest();
+
+            xhr.open("GET", "/api/list", true);
+            xhr.withCredentials = true;
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        console.log("Files listed successfully:", xhr.responseText);
+                        const files = JSON.parse(xhr.responseText.replace(/'/g, '"'));
+                        const fileTableBody = document.querySelector('tbody');
+                        fileTableBody.innerHTML = '';
+
+                        // Add each file to the table
+                        for (const [filename, fileData] of Object.entries(files)) {
+                            const metadata = fileData.metadata;
+                            const size = metadata.size;
+                            const owner = metadata.owner;
+                            const uploaded = metadata.uploaded;
+
+                            const row = document.createElement('tr');
+                            row.innerHTML = `
+
+                                    <td class="pl-4 py-2 whitespace-nowrap min-w-68" data-filename="${filename}">${filename}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-20">${size}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-20">${owner}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-36">${uploaded}</td>
+                                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
+                                        <div class="flex flex-row items-center gap-x-6 justify-end">
+                                            <button onclick="downloadFile('${filename}')" class="cursor-pointer">
+                                                <i class="uil uil-import" style="font-size:1.4rem;"></i>
+                                            </button>
+                                            <button onclick="deleteFile('${filename}')" class="cursor-pointer">
+                                                <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+
+                                `;
+                            fileTableBody.appendChild(row);
+                        }
+                    } else {
+                        console.error("Error listing files: HTTP Status", xhr.status);
+                    }
+                }
+            };
+
+            xhr.send();
+
+        }
+
+        function logout() {
+            var xhr = new XMLHttpRequest();
+            var data = {
+                username: document.getElementById("username").value,
+            };
+            var body = JSON.stringify(data);
+
+            xhr.open("DELETE", "/api/login", true);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.withCredentials = true;
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        console.log(
+                            "Response from server:",
+                            xhr.responseText,
+                        );
+                        // Hide the login div and show protected content on success
+                        document
+                            .getElementById("login")
+                            .classList.remove("hidden");
+                        document
+                            .getElementById("content")
+                            .classList.add("hidden");
+                    } else {
+                        console.error("Error: HTTP Status", xhr.status);
+                    }
+                }
+            };
+            xhr.send(body);
+        }
+
+        function downloadFile(filename) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/api/download", true);
+            xhr.setRequestHeader("X-File-Name",  encodeURIComponent(filename))
+            xhr.responseType = "arraybuffer";
+            xhr.onload = function () {
+                if (xhr.status === 200 ) {
+                    console.log("download file response: " , xhr.statusText );
+                    const arrayBuffer = xhr.response;
+
+                    const blob = new Blob([arrayBuffer], { type: "application/octet-stream" });
+                    const link = document.createElement("a");
+                    const url = window.URL.createObjectURL(blob);
+                    link.href = url;
+                    link.download = filename;
+                    document.body.appendChild(link);
+                    link.click();
+                } else {
+                    console.error("Upload failed. Status:", xhr.status, xhr.statusText);
+                }
+            };
+            xhr.send();
+        }
+
+        function readFileAsArrayBuffer(file) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsArrayBuffer(file);
+          });
+        }
+
+        async function uploadFileUnchunked() {
+            const fileInput = document.querySelector('input[type="file"]');
+            const file = fileInput.files[0];
+
+            if (!file) {
+              console.error("No file selected.");
+              return;
+            }
+
+            console.log("Uploading file:", file.name, "Size:", file.size);
+
+            try {
+
+              const fileContent = await readFileAsArrayBuffer(file);
+              const xhr = new XMLHttpRequest();
+
+              xhr.open("POST", "/api/upload", true);
+              xhr.setRequestHeader("Content-Type", "application/octet-stream");
+              xhr.setRequestHeader("X-File-Name", file.name);
+
+
+              xhr.onload = function () {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  console.log("File uploaded successfully.");
+                } else {
+                  console.error("Upload failed. Status:", xhr.status, xhr.statusText);
+                }
+              };
+
+              xhr.onerror = function () {
+                console.error("Error occurred during the file upload.");
+              };
+
+
+              xhr.send(fileContent);
+            } catch (error) {
+              console.error("Error reading file:", error);
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="login" class="flex items-center justify-center min-h-screen bg-gradient-to-t from-blue-800 to-sky-400">
+        <div class="px-12 py-20 text-left bg-white shadow-lg md:w-1/3 lg:w-1/3 sm:w-1/3 rounded-3xl">
+            <h3 class="text-4xl font-medium text-center font-sans mb-5">
+                Login to ☁️
+            </h3>
+            <form id="loginform">
+                <div class="mt-6">
+                    <div>
+                        <label class="font-mono block text-gray-600 text-opacity-50 text-sm mb-1" for="username">
+                            Username
+                        </label>
+                        <input
+                            class="font-mono shadow appearance-none border rounded-md w-full py-3 px-3 border-gray-400 text-gray-700 leading-tight focus:outline-pink-500 focus:shadow-outline"
+                            id="username" name="username" type="text" placeholder="Enter your username"
+                            autocomplete="username" />
+                    </div>
+                    <div class="flex flex-row items-center justify-center mt-8">
+
+                        <button
+                            class="px-4 py-2 font-bold text-white bg-pink-500 border-2 duration-200 border-pink-500 rounded-lg hover:bg-white hover:text-pink-500 focus:outline-none focus:shadow-outline font-mono cursor-pointer"
+                            type="submit">
+                            Sign In
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="content" class="hidden w-screen h-screen">
+        <header class=" p-4 flex items-center justify-between w-3/4 mx-auto mb-10 mt-20">
+            <div><span class="text-5xl font-mono font-semibold">CLOUD ☁️</span></div>
+            <div>
+                <div class="flex items-center gap-x-6">
+                    <div class="flex flex-col items-center">
+                        <img id="userAvatar" src="https://ui-avatars.com/api/?name=User" alt="User Avatar"
+                            class="w-10 h-10 rounded-full" />
+                    </div>
+
+                    <button onclick="logout()"
+                        class="gb-white border-2 text-red-600 border-red-600 px-5 py-1 rounded-lg hover:bg-red-600 hover:text-white transition duration-300 cursor-pointer">
+                        <div class="flex flex-row gap-x-1 items-center ">
+                            <i class="uil uil-sign-out-alt" style="font-size:1.2rem;"></i>
+                            <span class="text-sm">Log Out</span>
+                        </div>
+                    </button>
+                </div>
+        </header>
+        <main class="p-4">
+            <div
+                class="w-3/4 mx-auto flex flex-col md:flex-row md:items-center md:justify-between mb-4 space-y-4 md:space-y-0">
+                <h1 class="text-xl font-sans font-light ml-3">Files</h1>
+                <div class="flex space-x-5">
+                    <!-- Refresh -->
+                    <button onclick="refreshFiles()"
+                        class="bg-pink-500 border-2 border-pink-500 hover:bg-white hover:text-pink-500 text-white px-3 py-0 rounded-md transition duration-300 ease-in-out flex items-center cursor-pointer">
+                        <div class="flex flex-row gap-x-1 items-center">
+                            <i class="uil uil-refresh" style="font-size:1.2rem;"></i>
+                            <span class="text-sm">Refresh</span>
+                        </div>
+
+                    </button>
+                    <!-- Upload Section -->
+
+                    <label
+                        class="bg-lime-500 border-2 border-lime-500 hover:bg-white hover:text-lime-500 text-white px-3 py-0 rounded-md transition duration-300 ease-in-out flex items-center">
+                        <div class="flex flex-row gap-x-1 items-center cursor-pointer">
+                            <i class="uil uil-upload" style="font-size:1.2rem;"></i>
+                            <span class="text-sm">Upload</span>
+                        </div>
+                        <input type="file" class="hidden" id="fileInput" onchange="uploadFileUnchunked()" />
+                    </label>
+
+                </div>
+            </div>
+
+            <!-- Files Table -->
+            <div class="w-3/4 mx-auto bg-white border-2 border-slate-400 rounded-xl drop-shadow-md overflow-x-auto">
+                <table class="w-full divide-y  divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th
+                                class="pl-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-68">
+                                File Name
+                            </th>
+                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Size
+                            </th>
+                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Owner
+                            </th>
+                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Time Uploaded
+                            </th>
+                            <th
+                                class="pr-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
+                                Actions
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-slate-200 font-mono">
+                        <!-- <tr> -->
+                            <!-- <td class="pl-4 py-2 whitespace-nowrap min-w-68" data-filename="File1.txt">File1.txt</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">15 KB</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 10:30 AM</td>
+                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
+                      <div class="flex flex-row items-center gap-x-6  justify-end">
+                        <button onclick="downloadfile(filename)" class="cursor-pointer">
+                          <i class="uil uil-import" style="font-size:1.4rem; "></i>
+                        </button>
+                        <button  onclick="deleteFile(this)" class="cursor-pointer">
+                          <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
+                        </button>
+                    </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="pl-4 py-2 whitespace-nowrap min-w-68">File2.pdf</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">200 KB</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 10:45 AM</td>
+                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
+                        <div class="flex flex-row items-center gap-x-6  justify-end">
+                          <button onclick="downloadfile(filename)" class="cursor-pointer">
+                            <i class="uil uil-import" style="font-size:1.4rem; "></i>
+                          </button>
+                          <button  onclick="deleteFile(this)" class="cursor-pointer">
+                            <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
+                          </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="pl-4 py-2 whitespace-nowrap min-w-68">File3.jpg</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">1.2 MB</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
+                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 11:00 AM</td>
+                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
+                        <div class="flex flex-row items-center gap-x-6  justify-end">
+                          <button onclick="downloadfile(filename)" class="cursor-pointer">
+                            <i class="uil uil-import" style="font-size:1.4rem; "></i>
+                          </button>
+                          <button  onclick="deleteFile(this)" class="cursor-pointer">
+                            <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
+                          </button>
+                      </div>
+                    </td> -->
+                  <!-- </tr> -->
+                    </tbody>
+                </table>
+            </div>
+    </div>
+    </main>
+    </div>
+</body>
+
+</html>
