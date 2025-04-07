@@ -83,7 +83,7 @@
                 if (xhr.readyState === XMLHttpRequest.DONE) {
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
-                            const peers = JSON.parse(xhr.responseText);
+                            const peers = JSON.parse(xhr.responseText.replace(/'/g, '"'));
                             console.log("Received peers:", peers);
                             // TODO: Update the UI with the peer list
                         } catch (e) {

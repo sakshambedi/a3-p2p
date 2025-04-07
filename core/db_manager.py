@@ -30,6 +30,7 @@ class DB_Manager:
             if f_id not in self.file_ids:
                 fetch_files.add(f_id)
         return fetch_files
+        
     @property
     def db(self):
         return self._db_data
@@ -42,12 +43,13 @@ class DB_Manager:
 
     def add_file_user(self, file:str, u_name:str ):
         if file not in self.client_with_files: 
-            self.client_with_files.setdefault(file, [] )
-        self.client_with_files[file].append(u_name)
+            self.client_with_files.setdefault(file, set() )
+        self.client_with_files[file].add(u_name)
         
     def files_to_users(self, g_peer_id, files):        
-        for file in files: 
-            self.add_file_user(file, g_peer_id)
+        for file in files:
+            f_name = file["file_name"]
+            self.add_file_user(f_name, g_peer_id)
     
     def get_peer_with_file(self,f_name: str):
         return self.client_with_files.get(f_name, [])
