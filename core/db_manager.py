@@ -41,12 +41,16 @@ class DB_Manager:
             return self._data_dir
         raise ValueError("No data directory defined!")
 
-    def add_file_user(self, file:str, u_name:str ):
-        if file not in self.client_with_files: 
-            self.client_with_files.setdefault(file, set() )
-        self.client_with_files[file].add(u_name)
+    def add_file_user(self, file: str, u_name: str):
+        self.client_with_files.setdefault(file, set()).add(u_name)
+
+    # def add_file_user(self, file:str, u_name:str ):
+    #     if file not in self.client_with_files: 
+    #         self.client_with_files.setdefault(file, set() )
+    #     self.client_with_files[file].add(u_name)
         
-    def files_to_users(self, g_peer_id, files):        
+    def files_to_users(self, g_peer_id, files):    
+        logger.info(f"FILES{type(files)}: {files}")    
         for file in files:
             f_name = file["file_name"]
             self.add_file_user(f_name, g_peer_id)
