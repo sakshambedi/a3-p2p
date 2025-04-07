@@ -5,8 +5,120 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="https://unicons.iconscout.com/release/v4.0.8/css/line.css">
     <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
-    <title>A2 Website</title>
+    <title>A3 P2P Network</title>
     <script>
+
+        let refreshIntervalId = null;
+        const REFRESH_INTERVAL_SECONDS = 15; 
+
+
+        function periodicRefresh() {
+            console.log(`Performing periodic refresh check at ${new Date().toLocaleTimeString()}`);
+        
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/api/session-status", true); // Endpoint to check login status
+            xhr.withCredentials = true;
+        
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            if (data.loggedIn) {
+                                // Session is active - Proceed with refreshing data
+                                console.log("Session active. Refreshing files and peers.");
+                                refreshFiles(); // Call function to refresh file list
+                                refreshPeers(); // Call function to refresh peer list
+                            } else {
+                                // Session is not active or expired
+                                console.log("Session expired or user logged out. Stopping refresh.");
+                                stopAutoRefresh(); // Stop the interval timer
+                                // Show login screen, hide content
+                                document.getElementById("login").classList.remove("hidden");
+                                document.getElementById("content").classList.add("hidden");
+                                // Optionally clear sessionStorage if needed
+                                // sessionStorage.removeItem('client_uname');
+                            }
+                        } catch (e) {
+                            console.error("Error parsing session status:", e);
+                            // Treat parsing error as a potential session issue, stop refresh
+                            stopAutoRefresh();
+                            document.getElementById("login").classList.remove("hidden");
+                            document.getElementById("content").classList.add("hidden");
+                        }
+                    } else if (xhr.status === 401 || xhr.status === 403) { // Unauthorized or Forbidden
+                        console.log("Session check failed (Unauthorized/Forbidden). Stopping refresh.");
+                        stopAutoRefresh();
+                        document.getElementById("login").classList.remove("hidden");
+                        document.getElementById("content").classList.add("hidden");
+                    } else {
+                        // Handle other potential HTTP errors during session check
+                        console.error("Session check failed with status:", xhr.status);
+                        // Decide if other errors should stop the refresh, maybe they should
+                        // stopAutoRefresh();
+                        // document.getElementById("login").classList.remove("hidden");
+                        // document.getElementById("content").classList.add("hidden");
+                    }
+                }
+            };
+        
+            xhr.onerror = function() {
+                console.error("Network error during periodic session check. Cannot determine session status.");
+                // It's often safer to stop refreshing if network errors prevent session checks
+                stopAutoRefresh();
+                // Consider showing a network error message to the user
+            };
+        
+            xhr.send();
+        }
+
+        function refreshPeers() {
+            console.log("Refreshing peers list...");
+            // Placeholder: Later, add an XHR request here to get peer data from an endpoint like /api/peers
+            // Example structure:            
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/api/peers", true); // Replace with your actual peer endpoint
+            xhr.withCredentials = true;
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const peers = JSON.parse(xhr.responseText);
+                            console.log("Received peers:", peers);
+                            // TODO: Update the UI with the peer list
+                        } catch (e) {
+                            console.error("Error parsing peer list:", e);
+                        }
+                    } else {
+                        console.error("Error fetching peers. Status:", xhr.status);
+                    }
+                }
+            };
+            xhr.onerror = function() {
+                console.error("Network error fetching peers.");
+            };
+            xhr.send();
+            
+        }
+        
+        function startAutoRefresh() {
+            
+            if (refreshIntervalId !== null) {
+                clearInterval(refreshIntervalId);
+            }
+            console.log(`Starting auto-refresh every ${REFRESH_INTERVAL_SECONDS} seconds.`);                    
+            periodicRefresh();                 
+            refreshIntervalId = setInterval(periodicRefresh, REFRESH_INTERVAL_SECONDS * 1000); // Convert seconds to milliseconds
+        }
+
+        // --- Function to stop the automatic refresh ---
+        function stopAutoRefresh() {
+            if (refreshIntervalId !== null) {
+                console.log("Stopping auto-refresh.");
+                clearInterval(refreshIntervalId);
+                refreshIntervalId = null;
+            }
+        }
 
 
         window.addEventListener("load", () => {
@@ -40,6 +152,7 @@
                                         `https://ui-avatars.com/api/?name=${encodeURIComponent(savedUsername)}`;
                                 }
                                 refreshFiles()
+                                refreshPeers()
                             } else {
                                 document
                                     .getElementById("login")
@@ -105,6 +218,7 @@
                             .getElementById("content")
                             .classList.remove("hidden");
                         refreshFiles(); // Load files
+                        refreshPeers()
                     } else {
                         console.error("Error: HTTP Status", xhr.status);
                     }
@@ -134,6 +248,17 @@
             xhr.send();
         }
 
+        
+        function formatTimestamp(unixTimestamp) {
+            if (!unixTimestamp) return 'N/A'; 
+            const date = new Date(unixTimestamp * 1000);            
+            const options = {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit' //, second: '2-digit'
+            };
+            return date.toLocaleString(undefined, options);
+        }
+
         function refreshFiles() {
             var xhr = new XMLHttpRequest();
 
@@ -143,48 +268,93 @@
             xhr.onreadystatechange = function () {
                 if (xhr.readyState === XMLHttpRequest.DONE) {
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        console.log("Files listed successfully:", xhr.responseText);
-                        const files = JSON.parse(xhr.responseText.replace(/'/g, '"'));
-                        const fileTableBody = document.querySelector('tbody');
-                        fileTableBody.innerHTML = '';
+                        console.log("Raw response:", xhr.responseText); // Log raw response for debugging
+                        try {
+                            
+                            const files = JSON.parse(xhr.responseText.replace(/'/g, '"'));
 
-                        // Add each file to the table
-                        for (const [filename, fileData] of Object.entries(files)) {
-                            const metadata = fileData.metadata;
-                            const size = metadata.size;
-                            const owner = metadata.owner;
-                            const uploaded = metadata.uploaded;
+                            
+                            if (!Array.isArray(files)) {
+                                console.error("Error: Expected an array of files, but received:", typeof files);
+                                const fileTableBody = document.getElementById('files_table');
+                                fileTableBody.innerHTML = '<tr><td colspan="5" class="text-center text-red-500 py-4">Error loading file list. Expected an array.</td></tr>';
+                                return;
+                            }
 
-                            const row = document.createElement('tr');
-                            row.innerHTML = `
+                            console.log("Parsed files:", files);
 
-                                    <td class="pl-4 py-2 whitespace-nowrap min-w-68" data-filename="${filename}">${filename}</td>
-                                    <td class="px-2 py-2 whitespace-nowrap w-20">${size}</td>
-                                    <td class="px-2 py-2 whitespace-nowrap w-20">${owner}</td>
-                                    <td class="px-2 py-2 whitespace-nowrap w-36">${uploaded}</td>
+                            const fileTableBody = document.getElementById('files_table');;
+                            fileTableBody.innerHTML = ''; 
+
+                            
+                            if (files.length === 0) {
+                                fileTableBody.innerHTML = '<tr><td colspan="5" class="text-center text-gray-500 py-4">No files found.</td></tr>';
+                                return;
+                            }
+
+                            
+                            files.forEach(file => {
+                                
+                                const fileName = file.file_name;
+                                const fileSizeRaw = file.file_size; 
+                                const fileOwner = file.file_owner;
+                                const fileTimestampRaw = file.file_timestamp; 
+                                const fileId = file.file_id;
+                                const peersWithFile = file.peer_w_file || [];
+                                const formattedSize = typeof fileSizeRaw === 'number'
+                                                        ? Number(fileSizeRaw).toFixed(2)
+                                                        : 'N/A';
+                                
+                                const formattedTimestamp = formatTimestamp(fileTimestampRaw);
+
+                                const peerListString = peersWithFile.join(', ');                                
+                                const peerTitle = peersWithFile.length > 0
+                                                ? `Available from: ${peerListString}`
+                                                : 'No known peers have this file';
+
+                                const row = document.createElement('tr');                                
+                                row.innerHTML = `
+                                    <td class="pl-4 py-2 whitespace-nowrap min-w-68" data-fileid="${fileId}" title="${fileName}">${fileName}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-20">${formattedSize}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-20">${fileOwner}</td>
+                                    <td class="px-2 py-2 whitespace-nowrap w-36">${formattedTimestamp}</td>
+                                    <td class="px-2 py-2 align-top text-left whitespace-normal break-words min-w-[100px]" title="${peerTitle}">${peerListString || '-'}
+                                    </td>
                                     <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
                                         <div class="flex flex-row items-center gap-x-6 justify-end">
-                                            <button onclick="downloadFile('${filename}')" class="cursor-pointer">
+                                            <button onclick="downloadFile('${fileId}', '${fileName}')" class="cursor-pointer" title="Download ${fileName}">
                                                 <i class="uil uil-import" style="font-size:1.4rem;"></i>
                                             </button>
-                                            <button onclick="deleteFile('${filename}')" class="cursor-pointer">
+                                            <button onclick="deleteFile('${fileId}', '${fileName}')" class="cursor-pointer" title="Delete ${fileName}">
                                                 <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
                                             </button>
                                         </div>
                                     </td>
-
                                 `;
-                            fileTableBody.appendChild(row);
+                                fileTableBody.appendChild(row);
+                            });
+                        } catch (e) {
+                            console.error("Error parsing JSON response:", e, xhr.responseText);
+                            const fileTableBody = document.querySelector('tbody');
+                            fileTableBody.innerHTML = '<tr><td colspan="5" class="text-center text-red-500 py-4">Error parsing file list response.</td></tr>';
                         }
                     } else {
-                        console.error("Error listing files: HTTP Status", xhr.status);
+                        console.error("Error listing files: HTTP Status", xhr.status, xhr.statusText);
+                        const fileTableBody = document.querySelector('tbody');
+                        fileTableBody.innerHTML = `<tr><td colspan="5" class="text-center text-red-500 py-4">Error loading files (Status: ${xhr.status}).</td></tr>`;
                     }
                 }
             };
 
-            xhr.send();
+            xhr.onerror = function() { 
+                console.error("Network error occurred while listing files.");
+                const fileTableBody = document.querySelector('tbody');
+                fileTableBody.innerHTML = '<tr><td colspan="5" class="text-center text-red-500 py-4">Network error loading files.</td></tr>';
+            };
 
+            xhr.send();
         }
+
 
         function logout() {
             var xhr = new XMLHttpRequest();
@@ -371,79 +541,64 @@
                 </div>
             </div>
 
-            <!-- Files Table -->
-            <div class="w-3/4 mx-auto bg-white border-2 border-slate-400 rounded-xl drop-shadow-md overflow-x-auto">
-                <table class="w-full divide-y  divide-gray-200">
+            <!-- Peers Table -->
+            <div class="w-full max-w-7xl mx-auto bg-white border-2 border-slate-400 rounded-xl drop-shadow-md overflow-x-auto mt-10">
+                <div class="px-4 py-3 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-700">Connected Peers</h2>
+                </div>
+                <table class="w-full divide-y divide-gray-200 min-w-[600px]">
                     <thead class="bg-gray-50">
                         <tr>
-                            <th
-                                class="pl-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-68">
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                                Peer ID
+                            </th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                                Host
+                            </th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap w-20"> 
+                                Port
+                            </th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap w-28">
+                                Last Seen
+                            </th>
+                        </tr>
+                    </thead>                    
+                    <tbody id="peers-table-body" class="bg-white divide-y divide-slate-200 font-mono">
+                        <!-- Peer rows to be inserted dynamically -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Files Table -->
+            <div  class="w-full max-w-7xl mx-auto bg-white border-2 border-slate-400 rounded-xl drop-shadow-md overflow-x-auto mt-14">
+                <div class="px-4 py-3 border-b border-gray-200">
+                    <h2 class="text-lg font-semibold text-gray-700">Files on Network</h2>
+                </div>
+                <table class="w-full divide-y divide-gray-200 min-w-[700px]"> 
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="pl-4 pr-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> 
                                 File Name
                             </th>
-                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            <th class="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24"> 
                                 Size
                             </th>
-                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            <th class="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
                                 Owner
                             </th>
-                            <th class="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            <th class="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-40">
                                 Time Uploaded
                             </th>
-                            <th
-                                class="pr-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
+                            <th class="px-2 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-50"> 
+                                Peers with File
+                            </th>
+                            <th class="pl-2 pr-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
                                 Actions
                             </th>
                         </tr>
                     </thead>
-                    <tbody class="bg-white divide-y divide-slate-200 font-mono">
-                        <!-- <tr> -->
-                            <!-- <td class="pl-4 py-2 whitespace-nowrap min-w-68" data-filename="File1.txt">File1.txt</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">15 KB</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 10:30 AM</td>
-                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
-                      <div class="flex flex-row items-center gap-x-6  justify-end">
-                        <button onclick="downloadfile(filename)" class="cursor-pointer">
-                          <i class="uil uil-import" style="font-size:1.4rem; "></i>
-                        </button>
-                        <button  onclick="deleteFile(this)" class="cursor-pointer">
-                          <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
-                        </button>
-                    </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td class="pl-4 py-2 whitespace-nowrap min-w-68">File2.pdf</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">200 KB</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 10:45 AM</td>
-                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
-                        <div class="flex flex-row items-center gap-x-6  justify-end">
-                          <button onclick="downloadfile(filename)" class="cursor-pointer">
-                            <i class="uil uil-import" style="font-size:1.4rem; "></i>
-                          </button>
-                          <button  onclick="deleteFile(this)" class="cursor-pointer">
-                            <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
-                          </button>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td class="pl-4 py-2 whitespace-nowrap min-w-68">File3.jpg</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">1.2 MB</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-20">sbedi</td>
-                    <td class="px-2 py-2 whitespace-nowrap w-36">2023-09-01 11:00 AM</td>
-                    <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
-                        <div class="flex flex-row items-center gap-x-6  justify-end">
-                          <button onclick="downloadfile(filename)" class="cursor-pointer">
-                            <i class="uil uil-import" style="font-size:1.4rem; "></i>
-                          </button>
-                          <button  onclick="deleteFile(this)" class="cursor-pointer">
-                            <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
-                          </button>
-                      </div>
-                    </td> -->
-                  <!-- </tr> -->
+                    <tbody id="files_table" class="bg-white divide-y divide-slate-200 font-mono"> 
+
                     </tbody>
                 </table>
             </div>

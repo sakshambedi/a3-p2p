@@ -20,12 +20,12 @@ class webserver_protocol:
         assert len(str(args.port)) >= 4, ""
         logger.info(f"Web Server initializing with args: {args}")
         self.args = args # Store args if needed elsewhere
-        self._socket = self.setup_socket(args.web_host, args.web_port)
+        self._socket = self.setup_socket(args.host, args.port)
 
         # --- Remove File Server Specifics ---
-        # self._fs_socket = self.connect_to_file_server(args.fs_host, args.fs_port)
-        # self.fs_lock = threading.Lock()
-        # self.fs_response_queue = Queue()
+        self._fs_socket = self.connect_to_file_server(args.fs_host, args.fs_port)
+        self.fs_lock = threading.Lock()
+        self.fs_response_queue = Queue()
         # ------------------------------------
 
         # --- Store reference to P2P Protocol ---        
@@ -35,6 +35,7 @@ class webserver_protocol:
         self.error404_path = os.path.join(os.getcwd(), "ui", "404.html")
         self.user_ids: set = set() # For session cookies
         self.logged_users: dict[str, str] = {} # {session_cookie: user_peer_id} - Map cookie to P2P ID
+        self.stored_files : dict[str, str ] = {} # stores:  file : session_cookie
         
         # -- old --
         # self._socket = self.setup_socket(args.host, args.port)
@@ -42,11 +43,11 @@ class webserver_protocol:
         # self.fs_lock = threading.Lock()
         # self.fs_response_queue = Queue()
 
-        # self.index = open(os.path.join(os.getcwd(), "ui", "index.html")).read()
-        # self.error404 = open(os.path.join(os.getcwd(), "ui", "404.html")).read()
+        self.index = open(os.path.join(os.getcwd(), "ui", "index.html")).read()
+        self.error404 = open(os.path.join(os.getcwd(), "ui", "404.html")).read()
         # self.user_ids: set = set()
         # self.logged_users: dict[str, str] = {}
-        # self.buffer: dict[str, list] = {}
+        # self.buffer: dict[str, list] = {}        
 
     def setup_socket(self, host: str, port: int) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -75,8 +76,9 @@ class webserver_protocol:
         # A helper that sends a command over the persistent file server connection.
         with self.fs_lock:
             try:
+                command = json.dumps(command).encode('utf-8')
                 logger.info(f"Sending command to file server: {command.strip()}")
-                self._fs_socket.sendall(command.encode("utf-8"))
+                self._fs_socket.sendall(command)
                 response = self._fs_socket.recv(4096).decode("utf-8")
                 if response is not None:
                     response = Response.from_json(response)
@@ -205,16 +207,13 @@ class webserver_protocol:
         uaddr_uuid: str,
     ) -> tuple[str, bool]:
         pth = api_path[0]
+        
         if pth == "login":
             u_name = body["username"]
             if method == "POST":
-                # now we send the login request to the file server and add that to the list of user.
-                resp = self.send_fs_command(f"LOGIN {u_name} {uaddr_uuid}")
-                if resp.status == ResponseStatus.ERROR:
-                    return http_responses.error400("LOGIN UNSUCESSFULL"), True
-
+                
                 cookie = self.generate_cookie()
-                self.logged_users.setdefault(cookie, uaddr_uuid)
+                self.logged_users.setdefault(cookie, u_name)
 
                 return http_responses.success200("LOGIN SUCCESSFULL", cookie), True
             else:
@@ -234,11 +233,12 @@ class webserver_protocol:
             message = misc.json_body("loggedIn", logg_status)
             return http_responses.success200(message), True
         elif pth == "list":
-            resp = self.send_fs_command("LIST")
+            msg_send = {"type": "WEB_LIST"}
+            resp = self.send_fs_command(msg_send)
             if resp.status == ResponseStatus.ERROR:
                 return http_responses.error400("Refresh failed!"), True
 
-            l_elem = list(json.loads(resp.message).values())[-1]
+            l_elem = resp.message
             # logger.info(f"LIST({type(l_elem)}): {l_elem}")
             return http_responses.success200(f"{l_elem}"), True
         elif pth == "upload":
@@ -262,7 +262,6 @@ class webserver_protocol:
 
         elif pth == "download":
             f_name = header["X-File-Name"]
-
             logger.info(f"Got req : {pth} : {f_name}")
 
             file_bin = self.download_file(f_name)
@@ -272,6 +271,16 @@ class webserver_protocol:
                 ), True
 
             return http_responses.success200filedownload(file_bin), False
+
+        elif pth == "peers":            
+            msg_send = {"type": "WEB_GET_PEERS"}
+            resp = self.send_fs_command(msg_send)
+            if resp.status == ResponseStatus.ERROR:
+                return http_responses.error400("Refresh Peer failed!"), True
+
+            l_elem = resp.message            
+            return http_responses.success200(f"{l_elem}"), True
+                        
 
         elif pth.startswith("delete?file="):
             _, file = pth.split("?")

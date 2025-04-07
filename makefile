@@ -12,6 +12,12 @@ all: help
 run:
 	python $(PEER) --port $(PORT) --um_id $(UMNET_ID) --log-level $(LOG_LEVEL) --environment $(ENVIRONMENT)
 
+dev:
+	python $(PEER) --port $(PORT) --um_id $(UMNET_ID) --log-level $(LOG_LEVEL) --environment DEV 
+
+dummy:
+	python dummy.py --port 8999
+
 webserver:
 	python webserver.py
 

@@ -52,7 +52,9 @@ def valid_api_req(method: str, req: list[str], body: dict) -> bool:
     p = req[0]
     if p == "login" and method == "POST" and len(body) > 0:
         return True
-    elif p == "login" and method == "DELETE":
+    elif p == "login" and method == "DELETE":        
+        return True
+    elif p == "peers" and method == "GET":
         return True
     elif p == "list" and method == "GET":
         return True

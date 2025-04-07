@@ -64,8 +64,7 @@ def main():
     peer = None
     try:
         logger.info(f"Starting P2P Peer with ID: {args.um_id}")        
-        protocol = Peer_Protocol(args)            
-        # web_server = webserver_protocol(args, protocol) 
+        protocol = Peer_Protocol(args)                    
         protocol.run_server_loop()
             
     except KeyboardInterrupt:

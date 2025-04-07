@@ -15,9 +15,11 @@ class DB_Manager:
         self._db_data: None | dict = None
         self.fm: "File_Manager" = File_Manager(server_data)        
         self.file_ids: dict = {}  # store all the file IDs mapped to filenames
-
+        self.client_with_files:dict[str, list] = {} # file : [users]
         self._connect_to_db()
 
+
+        
     def files_to_get(self, files):        
         if not files:
             return
@@ -28,7 +30,6 @@ class DB_Manager:
             if f_id not in self.file_ids:
                 fetch_files.add(f_id)
         return fetch_files
-
     @property
     def db(self):
         return self._db_data
@@ -39,6 +40,19 @@ class DB_Manager:
             return self._data_dir
         raise ValueError("No data directory defined!")
 
+    def add_file_user(self, file:str, u_name:str ):
+        if file not in self.client_with_files: 
+            self.client_with_files.setdefault(file, [] )
+        self.client_with_files[file].append(u_name)
+        
+    def files_to_users(self, g_peer_id, files):        
+        for file in files: 
+            self.add_file_user(file, g_peer_id)
+    
+    def get_peer_with_file(self,f_name: str):
+        return self.client_with_files.get(f_name, [])
+        
+    
     def get_file_metadata(self, directory):
         metadata_list = []
 
@@ -104,6 +118,7 @@ class DB_Manager:
             for file in self._db_data:
                 if "file_id" in file and "file_name" in file:
                     self.file_ids[file["file_id"]] = file["file_name"]
+                    self.client_with_files[file["file_name"]]=[file["file_owner"]]
 
             logger.info(f"Loaded {self._db_data} entries from database")
         except Exception as e:
