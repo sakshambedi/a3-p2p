@@ -1,6 +1,6 @@
+import hashlib
 import json
 import os
-import hashlib
 
 from core.file_manager import File_Manager
 from utils.logger import Logger, LoggerClass
@@ -13,14 +13,12 @@ class DB_Manager:
         self._data_dir: str = os.path.join(os.getcwd(), server_data)
         self.db_dir: str = os.path.join(os.getcwd(), db_file)
         self._db_data: None | dict = None
-        self.fm: "File_Manager" = File_Manager(server_data)        
+        self.fm: "File_Manager" = File_Manager(server_data)
         self.file_ids: dict = {}  # store all the file IDs mapped to filenames
-        self.client_with_files:dict[str, set] = {} # file : [users]
+        self.client_with_files: dict[str, set] = {}  # file : [users]
         self._connect_to_db()
 
-
-        
-    def files_to_get(self, files):        
+    def files_to_get(self, files):
         if not files:
             return
 
@@ -30,7 +28,7 @@ class DB_Manager:
             if f_id not in self.file_ids:
                 fetch_files.add(f_id)
         return fetch_files
-        
+
     @property
     def db(self):
         return self._db_data
@@ -42,22 +40,20 @@ class DB_Manager:
         raise ValueError("No data directory defined!")
 
     def add_file_user(self, file: str, u_name: str):
-        if file not in self.client_with_files: 
+        if file not in self.client_with_files:
             self.client_with_files[file] = set()
-        
+
         self.client_with_files[file].add(u_name)
-    
-        
-    def files_to_users(self, g_peer_id, files):    
-        logger.info(f"FILES{type(files)}: {files}")    
+        logger.info(f"client_w_files : {self.client_with_files}")
+
+    def files_to_users(self, g_peer_id, files):
         for file in files:
             f_name = file["file_name"]
             self.add_file_user(f_name, g_peer_id)
-    
-    def get_peer_with_file(self,f_name: str):
+
+    def get_peer_with_file(self, f_name: str):
         return self.client_with_files.get(f_name, [])
-        
-    
+
     def get_file_metadata(self, directory):
         metadata_list = []
 
@@ -123,7 +119,7 @@ class DB_Manager:
             for file in self._db_data:
                 if "file_id" in file and "file_name" in file:
                     self.file_ids[file["file_id"]] = file["file_name"]
-                    self.client_with_files[file["file_name"]]=[file["file_owner"]]
+                    self.client_with_files[file["file_name"]] = [file["file_owner"]]
 
             logger.info(f"Loaded {self._db_data} entries from database")
         except Exception as e:
@@ -138,34 +134,32 @@ class DB_Manager:
         except Exception as e:
             logger.error(f"Error saving JSON to {output_file}: {str(e)}")
             return False
-        
-    def get_all_info(self, file_id:str):
+
+    def get_all_info(self, file_id: str):
         files = self._db_data
         for file in files:
-            if file['file_id'] == file_id:
+            if file["file_id"] == file_id:
                 return file
         return None
 
     def get_file_data(self, file_id: str) -> dict:
-        
         if file_id not in self.file_ids:
             logger.warning(f"File ID {file_id} not found in database")
-            return  {   
-                    "type": "FILE_DATA",
-                    "file_name": None,
-                    "file_size": None,
-                    "file_id": file_id,
-                    "file_owner": None,
-                    "file_timestamp": None,
-                    "data": None,
-                }
-            
-            
+            return {
+                "type": "FILE_DATA",
+                "file_name": None,
+                "file_size": None,
+                "file_id": file_id,
+                "file_owner": None,
+                "file_timestamp": None,
+                "data": None,
+            }
+
         file_name = self.file_ids[file_id]
         try:
             content = self.fm.get_file(file_name)
-            f_info = self.get_all_info(file_id)        
-            m_data = {   
+            f_info = self.get_all_info(file_id)
+            m_data = {
                 "type": "FILE_DATA",
                 "file_name": file_name,
                 "file_size": f_info["file_size"],
@@ -177,8 +171,6 @@ class DB_Manager:
             return m_data
         except Exception as e:
             logger.error(f"Error retrieving file {file_name}: {str(e)}")
-    
-        
 
     def __rm_file_by_id(self, files, file_id_to_remove):
         if not files or not file_id_to_remove:
@@ -220,9 +212,9 @@ class DB_Manager:
             logger.error(f"Error reading database file: {str(e)}")
             return []
 
-    def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt  ) -> None:        
+    def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) -> None:
         # logger.debug(f"{f_name}, {f_size}, {f_id}, {f_owner}, {f_tstmp}, {len(f_contnt)}")
-        
+
         if f_id not in self.file_ids:
             inp_data = {
                 "file_name": f_name,
