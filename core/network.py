@@ -318,7 +318,7 @@ class Peer_Protocol:
                 f_to_req = self.db.files_to_get(files)
                 logger.info(f"{g_peer_id} with files : {files} ")
                 self.db.files_to_users(g_peer_id, files)
-                logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ""} files.")
+                logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")
                 if f_to_req:
                      logger.debug(f"Requesting files: {f_to_req}")
                 for f_id in f_to_req:
