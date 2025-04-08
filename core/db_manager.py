@@ -15,7 +15,7 @@ class DB_Manager:
         self._db_data: None | dict = None
         self.fm: "File_Manager" = File_Manager(server_data)        
         self.file_ids: dict = {}  # store all the file IDs mapped to filenames
-        self.client_with_files:dict[str, list] = {} # file : [users]
+        self.client_with_files:dict[str, set] = {} # file : [users]
         self._connect_to_db()
 
 

@@ -315,8 +315,7 @@ class Peer_Protocol:
 
             if all([g_host, g_port, g_peer_id, files is not None]):
                 
-                f_to_req = self.db.files_to_get(files)
-                logger.info(f"{g_peer_id} with files : {files} ")
+                f_to_req = self.db.files_to_get(files)                
                 self.db.files_to_users(g_peer_id, files)
                 logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")
                 if f_to_req:
