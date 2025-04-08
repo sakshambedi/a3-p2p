@@ -10,6 +10,7 @@ logger: LoggerClass = Logger(__name__).get_logger()
 
 class DB_Manager:
     def __init__(self, db_file: str, server_data: str):
+        # self.server_data = server_data
         self._data_dir: str = os.path.join(os.getcwd(), server_data)
         self.db_dir: str = os.path.join(os.getcwd(), db_file)
         self._db_data: None | dict = None
@@ -20,7 +21,7 @@ class DB_Manager:
 
     def files_to_get(self, files):
         if not files:
-            return
+            return None
 
         fetch_files = set()
         for file in files:
@@ -43,8 +44,7 @@ class DB_Manager:
         if file not in self.client_with_files:
             self.client_with_files[file] = set()
 
-        self.client_with_files[file].add(u_name)
-        logger.info(f"client_w_files : {self.client_with_files}")
+        self.client_with_files[file].add(u_name)        
 
     def files_to_users(self, g_peer_id, files):
         for file in files:
@@ -114,12 +114,11 @@ class DB_Manager:
             logger.info(f"Successfully connected to: {db_path}")
             self._db_data = self.list_files()
 
-            # Reset file_ids and repopulate from db_data
             self.file_ids = {}
             for file in self._db_data:
                 if "file_id" in file and "file_name" in file:
                     self.file_ids[file["file_id"]] = file["file_name"]
-                    self.client_with_files[file["file_name"]] = [file["file_owner"]]
+                    self.client_with_files[file["file_name"]] = set([file["file_owner"]])
 
             logger.info(f"Loaded {self._db_data} entries from database")
         except Exception as e:
@@ -212,9 +211,10 @@ class DB_Manager:
             logger.error(f"Error reading database file: {str(e)}")
             return []
 
+    
+                
     def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) -> None:
-        # logger.debug(f"{f_name}, {f_size}, {f_id}, {f_owner}, {f_tstmp}, {len(f_contnt)}")
-
+        
         if f_id not in self.file_ids:
             inp_data = {
                 "file_name": f_name,

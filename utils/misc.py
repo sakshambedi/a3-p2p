@@ -1,11 +1,18 @@
 import json
-
+import hashlib
 from utils.logger import Logger, LoggerClass
 
 __all__ = ["api_response", "split_http"]
 
 logger: LoggerClass = Logger(__name__).get_logger()
 
+
+def file_hash(timestamp, file_content):
+    hashBase = hashlib.sha256()
+    hashBase.update(file_content)
+    hashBase.update(str(timestamp).encode())
+    file_id = hashBase.hexdigest()
+    return file_id
 
 def json_body(key, value):
     json_body = json.dumps({key: value})

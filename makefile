@@ -24,8 +24,7 @@ webserver:
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	rm -rf server_data/*
+	find . -type f -name "*.pyc" -delete	
 
 # Help message
 help:

@@ -23,6 +23,8 @@ class Peer_Protocol:
         self.stop_event = threading.Event() 
         self.listener_socket : None | socket.socket = None
         self.web_server_socket : None | socket.socket = None
+        self.buffer : dict[str, str] = {} 
+        self.partial_data = {}  # sock -> bytearray
         
         
         self.client_executor = concurrent.futures.ThreadPoolExecutor(
@@ -117,24 +119,11 @@ class Peer_Protocol:
                 for sock in readable:
                     if sock is self.listener_socket:                        
                         self.accept_new_connection(self.listener_socket, source='peer')
-                    elif sock is self.web_server_socket: # <--- Renamed for clarity
-                        
-                        self.accept_new_connection(self.web_server_socket, source='internal') # Use 'internal' or 'web'
+                    elif sock is self.web_server_socket:                         
+                        self.accept_new_connection(self.web_server_socket, source='web') 
                     else:
-                        self.handle_readable_client(sock) # existing client connection
-                # for sock in readable:
-                #     if sock is self.listener_socket:
-                #         self.accept_new_connection()
-                #     elif sock is self.web_server_socket:
-                #         # Accept a connection from the LOCAL web server
-                #         self.accept_new_connection(sock, source='web') # Pass source/flag
-                #     else: 
-                #         self.handle_readable_client(sock) # existing client connection
-                
-                # for sock in writable:
-                    # Handle sending queued data
-                    # pass
-
+                        self.handle_readable_client(sock)
+    
                 
                 for sock in exceptional:
                     logger.warning(f"Handling exceptional condition for socket {sock.fileno()}")
@@ -148,57 +137,53 @@ class Peer_Protocol:
             except Exception as e:
                  # Catch other unexpected errors in the loop
                  if self.stop_event.is_set():
-                      break # Exit loop cleanly if stopping
+                      break 
                  logger.error(f"Error in server loop: {e}", exc_info=True)
 
 
         logger.info("Server select loop finished.")
         self.cleanup_all_sockets() # Clean remaining sockets after loop exits
 
-    # def accept_new_connection(self, source:str =""):
-    #     """Accept a new connection from the listener socket."""
-    #     try:
-    #         client_socket, addr = self.listener_socket.accept()
-    #         client_socket.setblocking(False)
-    #         self.inputs.append(client_socket)        
-    #         self.client_sockets[client_socket.fileno()] = client_socket
-    #     except BlockingIOError:
-    #         # This can happen if the listener is non-blocking and no connection is actually ready
-    #         pass
-    #     except Exception as e:
-    #         logger.error(f"Error accepting new connection: {e}")
+    
     def accept_new_connection(self, listener_sock: socket.socket, source: str = "unknown"):
         """Accept a new connection from the SPECIFIED listener socket."""
         try:            
-            client_socket, addr = listener_sock.accept()
-            # logger.info(f"Accepted connection from {addr} via '{source}' listener ({listener_sock.getsockname()})")
+            client_socket, addr = listener_sock.accept()            
 
             client_socket.setblocking(False)
-            self.inputs.append(client_socket)
-            # Store the client socket. You might want to know its source later
-            # e.g., self.client_sockets[client_socket.fileno()] = {'socket': client_socket, 'source': source}
-            # or just store the socket if you check the source IP in the handler
+            self.inputs.append(client_socket)            
             self.client_sockets[client_socket.fileno()] = client_socket
 
-        except BlockingIOError:
-            # Expected for non-blocking sockets if readiness was spurious
+        except BlockingIOError:            
             pass
-        except Exception as e:
-            # Log which listener failed
+        except Exception as e:            
             listener_name = listener_sock.getsockname() if listener_sock else 'unknown listener'
             logger.error(f"Error accepting new connection ({source}) on {listener_name}: {e}", exc_info=True)
 
+    def is_full_json(self, data: bytearray) -> bool:
+        """Check if the data probably contains a complete JSON object."""
+        text = data.decode(errors="ignore")
+        return text.rstrip().endswith('}')
+    
     def handle_readable_client(self, sock: socket.socket):
         """Handle data received on a client socket."""
         addr = "unknown"
         try:
-            addr = sock.getpeername()            
+            addr = sock.getpeername()
             data = sock.recv(4096)
 
             if data:                
-                self.client_executor.submit(self._process_received_data, data, sock, addr)
-            else:                
+                if sock not in self.partial_data:
+                    self.partial_data[sock] = bytearray()
+                self.partial_data[sock].extend(data)
+                
+                if self.is_full_json(self.partial_data[sock]):
+                    full_data = self.partial_data.pop(sock)  # Get and remove buffered data                    
+                    # logger.info(f"Full_Data: {full_data}")
+                    self.client_executor.submit(self._process_received_data, full_data, sock, addr)
+            else:
                 self.cleanup_socket(sock, addr)
+                                
 
         except BlockingIOError:            
             pass
@@ -217,7 +202,6 @@ class Peer_Protocol:
         """Worker function (runs in thread pool) to decode and process message."""
         try:
             msg_obj = json.loads(data.decode('utf-8'))
-            # Call the original processing logic
             self.process_message(msg_obj, client_socket, addr)
         except json.JSONDecodeError as json_d:
             logger.error(f"Invalid JSON received from {addr}: {json_d} - Data: {data[:25]}...")
@@ -225,18 +209,11 @@ class Peer_Protocol:
             logger.error(f"Error processing message from {addr} in worker thread: {e}", exc_info=True)
         
 
-    # ========================================================================
-    # Outgoing Request Handling (_handle_file_request) - Kept Threaded
-    # This part handles *initiating* requests, separate from the select loop
-    # for *incoming* connections. Using threads here is simpler than
-    # integrating complex non-blocking connect/send/recv state into select.
-    # ========================================================================
-
+    
     def req_file(self, host: str, port: int, file_id):
-        """Spawns a thread to handle an outgoing file request."""
-        # This remains unchanged - uses standard threading for outgoing requests
+        """Spawns a thread to handle an outgoing file request."""        
         thread = threading.Thread(target=self._handle_file_request, args=(host, port, file_id))
-        thread.daemon = True # Prevent these threads from blocking shutdown
+        thread.daemon = True
         thread.start()
 
     def _handle_file_request(self, host: str, port: int, file_id):
@@ -246,7 +223,7 @@ class Peer_Protocol:
         try:
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(10.0)
+                # s.settimeout(10.0)
                 s.connect((host, port))
                 request_message = {
                     "type": "GET_FILE",
@@ -258,7 +235,7 @@ class Peer_Protocol:
                 
                 response_data = b""
                 while True: 
-                     chunk = s.recv(4096)
+                     chunk = s.recv(8096)
                      if not chunk:
                           break
                      response_data += chunk
@@ -283,10 +260,6 @@ class Peer_Protocol:
             logger.exception(f"Unexpected error in _handle_file_request for {file_id}: {e}")
         
 
-
-    # ========================================================================
-    # Message Processing and Sending Logic
-    # ========================================================================
 
     def process_message(self, msg_obj: dict, client_socket: socket.socket | None, addr: tuple):
         """Process incoming messages based on their type.
@@ -313,15 +286,14 @@ class Peer_Protocol:
         elif msg_type == "GOSSIP_REPLY":
             g_host, g_port, g_peer_id, files = msg_obj.get("host"), int(msg_obj.get("port")), msg_obj.get("peerId"), msg_obj.get("files")
 
-            if all([g_host, g_port, g_peer_id, files is not None]):
-                
-                f_to_req = self.db.files_to_get(files)                
-                self.db.files_to_users(g_peer_id, files)
-                logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")
-                if f_to_req:
-                     logger.debug(f"Requesting files: {f_to_req}")
-                for f_id in f_to_req:
-                    self.req_file(g_host, g_port, f_id) # Initiates outgoing requests
+            if all([g_host, g_port, g_peer_id, files is not None]):                
+                f_to_req = self.db.files_to_get(files)    
+                if f_to_req is not None:             
+                    self.db.files_to_users(g_peer_id, files)
+                    logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")                    
+                    logger.debug(f"Requesting files: {f_to_req}")
+                    for f_id in f_to_req:
+                        self.req_file(g_host, g_port, f_id) # Initiates outgoing requests
 
         elif msg_type == "GET_FILE":                        
             f_id = msg_obj.get("file_id")
@@ -340,21 +312,23 @@ class Peer_Protocol:
 
         elif msg_type == "FILE_DATA":    
             try:
-                  f_name = msg_obj["file_name"]
-                  f_size = msg_obj["file_size"]
-                  f_id = msg_obj["file_id"]
-                  f_owner = msg_obj["file_owner"]
-                  f_tstmp = msg_obj["file_timestamp"]
-                  f_contnt = msg_obj["data"] 
+                f_name = msg_obj["file_name"]
+                f_size = msg_obj["file_size"]
+                f_id = msg_obj["file_id"]
+                f_owner = msg_obj["file_owner"]
+                f_tstmp = msg_obj["file_timestamp"]
+                f_contnt = msg_obj["data"] 
+                um_id = self.args.um_id
+                
+                logger.info(f"Received FILE_DATA for '{f_name}' ({f_id}) from {addr}")
+                
 
-                  logger.info(f"Received FILE_DATA for '{f_name}' ({f_id}) from {addr}")
-
-                  if f_name and f_size and  f_id and f_owner and f_tstmp and  f_contnt:
-                      self.db.save_new_file(f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) 
-                    #   self.send_announcement()
-                      logger.info(f"Successfully saved file: {f_name}")
-                  else:
-                      logger.error(f"Incomplete FILE_DATA received from {addr}: Missing fields.")        
+                if f_name and f_size and  f_id and f_owner and f_tstmp and f_contnt:
+                    self.db.save_new_file(f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) 
+                    self.send_announcement(um_id ,f_name, f_size, f_id, f_owner, f_tstmp)
+                    logger.info(f"Successfully saved file: {f_name}")
+                else:
+                    logger.error(f"Incomplete FILE_DATA received from {addr}: Missing fields.")        
 
             except KeyError as e:
                 logger.error(f"Missing key {e} in FILE_DATA received from {addr}: {msg_obj}")
@@ -369,8 +343,8 @@ class Peer_Protocol:
             db_fname = self.db.file_ids.get(f_id)
             
             if f_id in self.db.db and f_name == db_fname: 
-                # self.network_tracker.save_announcement(f_id, acc)
-                logger.info(f"{msg_type}: Stored {acc} has file {f_name}") 
+                logger.info(f"{msg_type}: Stored {acc} has file {f_name}")
+                self.db.add_file_user(f_name, acc)
 
         elif msg_type == "DELETE":
             logger.info(f"{msg_type} received from {addr}: {msg_obj}")
@@ -383,27 +357,69 @@ class Peer_Protocol:
                 new_file_data = file_data.copy() 
                 f_name = new_file_data.get("file_name")
                 peers = self.db.get_peer_with_file(f_name)
-                new_file_data["peer_w_file"] = peers 
-                augmented_list.append(new_file_data)
-                         
+                new_file_data["peer_w_file"] = list(peers)
+                augmented_list.append(new_file_data)                         
             response_msg = {"status": "SUCCESS", "request_type": "LIST", "message": augmented_list } if augmented_list else {"status": "ERROR", "request_type": "LIST", "message": "UNSUCCESSFULL" }                                          
+            logger.info(f"{msg_type} : {response_msg}")
             self.send_ws_response(response_msg, client_socket)
-            logger.info(f"WEB_LIST sends : {response_msg}")                        
+            
         elif msg_type == "WEB_GET_PEERS":
             peer_status = self.network_tracker.get_peers_status()  
             logger.info(f"Peer status: {peer_status}")                        
             response_msg = {"status": "SUCCESS", "request_type": "LIST", "message": peer_status } if peer_status else {"status": "ERROR", "request_type": "LIST", "message": "Couldn't fetch peer status" }                                          
             self.send_ws_response(response_msg, client_socket)
-            logger.info(f"WEB_LIST sends : {response_msg}")                        
+            logger.info(f"{msg_type} : {response_msg}")
+        elif msg_type == "WEB_DOWNLOAD":
+            pass
+        
+        elif msg_type == "WEB_UPLOAD":
+            f_name = msg_obj.get("file_name")
+            f_size = msg_obj.get("file_size")
+            f_id = msg_obj.get("file_id")
+            f_owner = msg_obj.get("file_owner")
+            f_timestamp = msg_obj.get("file_timestamp")
+            f_cont = msg_obj.get("data")
+
+            logger.info(f"Starting file upload: {f_name} ({f_size} bytes)")
+
+            self.buffer[f_name] = f_cont
+            received_bytes = len(f_cont)
+
+                    
+
+            if received_bytes >= f_size:
+                logger.info(f"File {f_name} received successfully.")
+
+                # Save the file
+                f_owner = self.args.um_id
+                file_data = self.buffer[f_name]  
+                f_size = float(f_size) / (1024*1024)             
+                self.db.save_new_file(f_name, f_size, f_id, f_owner,f_timestamp, file_data)
+                self.db.add_file_user(f_name, f_owner)
+                self.send_announcement(f_owner, f_name, f_size, f_id, f_owner, f_timestamp)
+                response_msg = {
+                    "status": "SUCCESS",
+                    "request_type": "PUSH",
+                    "message": f"File {f_name} uploaded successfully!"
+                }
+            else:
+                logger.error(f"Incomplete file received: expected {f_size}, got {received_bytes}")
+                response_msg = {
+                    "status": "ERROR",
+                    "request_type": "PUSH",
+                    "message": f"Failed to upload file {f_name}."
+                }
+
+            self.send_ws_response(response_msg, client_socket)
         else:
             logger.warning(f"Received unknown message type '{msg_type}' from {addr}")
             
             
-    def send_ws_response(self, response: dict , ws_sock: socket.socket ):
+    def send_ws_response(self, response: dict , ws_sock: socket.socket):
         try:
             reply_message  = json.dumps(response).encode("utf-8")
             ws_sock.sendall(reply_message)
-            logger.info(f"Sent reply to web server: {reply_message}") #TODO: convert to debug
+            logger.debug(f"Sent reply to web server: {reply_message}") 
         except socket.error as e:
             logger.error(f"Socket error sending reply to web server {ws_sock.getpeername()}: {e}")
             self.cleanup_socket(ws_sock, "web server send error")
@@ -414,35 +430,41 @@ class Peer_Protocol:
                 
         
     
-    
-    def send_announcement(self, f_name: str, f_size: str, f_id: str , f_owner: str, f_timestamp: str) -> None: 
-        # {
-        #    "type": "ANNOUNCE",
-        #    "from": "Peer ID",
-        #    "file_name": "File name",
-        #    "file_size": 123,
-        #    "file_id": "Hash of the content + timestamp",
-        #    "file_owner": "Owner ID",
-        #    "file_timestamp": 123456,
-        # }
+    def send_message(self, host: str, port: int, message: bytes) -> None:
+        # logger.info(f"sending {host}:{port}, {message}")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:            
+            sock.connect((host, port))
+            sock.sendall(message)
+            
+    def send_announcement(self, from_id: str ,f_name: str, f_size: str, f_id: str , f_owner: str, f_timestamp: str) -> None:         
         message = {
            "type": "ANNOUNCE",
-           "from": f_owner,
+           "from": from_id,
            "file_name": f_name,
            "file_size": f_size,
            "file_id": f_id,
            "file_owner": f_owner,
            "file_timestamp": f_timestamp,
         }
-        pass
+        message = json.dumps(message).encode('utf-8')            
+        all_peers = self.network_tracker.get_all_peers()
+        for peer in all_peers:
+            try:
+                host, port = peer.split(":")
+                port = int(port)
+                self.send_message(host, port, message)
+                logger.info(f"Sent ANNOUNCE to {peer}")
+            except Exception as e :
+                logger.error(f"Failed to send ANNOUNCE to {peer}:{e}")
+        
+        
     
     def send_file_data(self, content: dict, c_socket: socket.socket) -> None:
         """Send generic data (intended for FILE_DATA) on an existing connection."""
         if not c_socket:
              logger.error("Attempted send_file_data with no socket.")
              return
-        try:
-            
+        try:            
             content.setdefault("type", "FILE_DATA")
             message_bytes = json.dumps(content).encode('utf-8')            
             c_socket.sendall(message_bytes)
@@ -455,7 +477,7 @@ class Peer_Protocol:
         """Send a GOSSIP_REPLY by creating a new connection."""        
         reply_socket = None
         try:
-            reply_socket = socket.create_connection((host, port), timeout=5.0)
+            reply_socket = socket.create_connection((host, port), timeout=10.0)
             reply_message = {
                 "type": "GOSSIP_REPLY",
                 "host": self.args.host if self.args.host else socket.gethostbyname(socket.gethostname()),
