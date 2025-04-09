@@ -21,23 +21,26 @@ class Peer_Protocol:
         self.network_tracker = Network_Tracker()
         self.running = True
         self.stop_event = threading.Event() 
-        self.listener_socket : None | socket.socket = None
-        self.web_server_socket : None | socket.socket = None
-        self.buffer : dict[str, str] = {} 
+        self.listener_socket: None | socket.socket = None
+        self.web_server_socket: None | socket.socket = None
+        self.buffer: dict[str, str] = {} 
         self.partial_data = {}  # sock -> bytearray
-        
-        
+
         self.client_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=getattr(args, 'max_connections', 50),
-            thread_name_prefix='MsgProcessor' # Renamed for clarity
+            thread_name_prefix='MsgProcessor'
         )
 
         self.inputs = [] 
         self.outputs = []         
-        self.client_sockets = {} # {socket_fileno: socket_object}
+        self.client_sockets = {}  # {socket_fileno: socket_object}
+
+        # NEW: Dictionary to store peer addresses from gossip messages.
+        self.known_peers = {}  # key: peerId, value: (host, port)
 
         self.__start()
 
+    
     def __start(self) -> None:
         try:
             self.start_listener_socket() 
@@ -123,6 +126,21 @@ class Peer_Protocol:
                         self.accept_new_connection(self.web_server_socket, source='web') 
                     else:
                         self.handle_readable_client(sock)
+                        
+                for sock in writable:
+                    if hasattr(self, 'pending_messages') and sock in self.pending_messages:
+                        try:
+                            # Since the message is small, sendall should complete the send.
+                            sock.sendall(self.pending_messages[sock])
+                            # After sending, remove the message from the dictionary
+                            del self.pending_messages[sock]
+                            # Remove the socket from the outputs list but keep it in inputs to receive the response.
+                            if sock in self.outputs:
+                                self.outputs.remove(sock)
+                        except Exception as e:
+                            logger.error(f"Error sending GET_FILE request on socket {sock.fileno()}: {e}")
+                            addr = sock.getpeername() if sock.fileno() in self.client_sockets else "unknown"
+                            self.cleanup_socket(sock, addr)
     
                 
                 for sock in exceptional:
@@ -184,7 +202,6 @@ class Peer_Protocol:
             else:
                 self.cleanup_socket(sock, addr)
                                 
-
         except BlockingIOError:            
             pass
         except ConnectionResetError:
@@ -248,18 +265,18 @@ class Peer_Protocol:
                     logger.info(f"Received response for GET_FILE({file_id}) from {host}:{port}")        
                     self.process_message(response_obj, None, (host, port))
                 else:
-                    logger.warning(f"No response received for GET_FILE({file_id}) from {host}:{port}")
+                    pass
+                    # logger.warning(f"No response received for GET_FILE({file_id}) from {host}:{port}")
 
         except socket.timeout:
             logger.warning(f"Timeout during GET_FILE request/response for {file_id} to {host}:{port}")
         except socket.error as e:
             logger.error(f"Socket error in _handle_file_request for {file_id} to {host}:{port}: {e}")
-        except json.JSONDecodeError as e:
-             logger.error(f"Failed to decode JSON response for {file_id} from {host}:{port}: {e} - Data: {response_data[:100]}...")
+        # except json.JSONDecodeError as e:
+        #      logger.error(f"Failed to decode JSON response for {file_id} from {host}:{port}: {e} - Data: {response_data[:100]}...")
         except Exception as e:
             logger.exception(f"Unexpected error in _handle_file_request for {file_id}: {e}")
-        
-
+    
 
     def process_message(self, msg_obj: dict, client_socket: socket.socket | None, addr: tuple):
         """Process incoming messages based on their type.
@@ -272,83 +289,112 @@ class Peer_Protocol:
             origin_port = int(msg_obj.get("port")) 
             origin_peerId = msg_obj.get("peerId")
             gossip_id = msg_obj.get("id")
-
+            
+            
             if all([origin_host, origin_port, origin_peerId, gossip_id]) and origin_peerId != self.args.um_id:
+            
+                self.known_peers[origin_peerId] = (origin_host, origin_port)                            
                 if not self.network_tracker.id_exists(gossip_id):
                     self.network_tracker.save_id(gossip_id)
                     self.network_tracker.update_peers(origin_peerId, (origin_host, origin_port))
                     self.send_gossip_reply(origin_host, origin_port, gossip_id)
                     logger.info(f"Got a GOSSIP from {origin_host}:{origin_port}")
-                # else:
-                    # logger.debug(f"Ignoring duplicate GOSSIP ID {gossip_id} from {addr}")
-
-
+        
         elif msg_type == "GOSSIP_REPLY":
             g_host, g_port, g_peer_id, files = msg_obj.get("host"), int(msg_obj.get("port")), msg_obj.get("peerId"), msg_obj.get("files")
-
-            if all([g_host, g_port, g_peer_id, files is not None]):                
+            if g_peer_id == "rizviz":
+                logger.info(f"Received GOSSIP_REPLY from {addr}, need {files if files is not None else ''} files.")
+            if all([g_host, g_port, g_peer_id, files is not None]):
+                for fl in files: 
+                    file_id = fl.get("file_id")
+                    file_owner = fl.get("file_owner")
+                    self.db.add_file_owner(file_id, file_owner)
                 f_to_req = self.db.files_to_get(files)    
                 if f_to_req is not None:             
                     self.db.files_to_users(g_peer_id, files)
-                    logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")                    
-                    logger.debug(f"Requesting files: {f_to_req}")
+                    # logger.info(f"Received GOSSIP_REPLY from {addr}, need {len(f_to_req) if f_to_req is not None else ''} files.")                    
+                    # logger.info(f"Requesting files: {f_to_req}")
                     for f_id in f_to_req:
                         self.req_file(g_host, g_port, f_id) # Initiates outgoing requests
+                        # self.req_file(g_peer_id, f_id) # Initiates outgoing requests
 
         elif msg_type == "GET_FILE":                        
             f_id = msg_obj.get("file_id")
-            if f_id:
-                logger.info(f"Processing GET_FILE request for {f_id} from {addr}")
-                f_data = self.db.get_file_data(f_id)
-                if f_data:
-
-                    self.send_file_data(f_data, client_socket)
-                    logger.info(f"SUCCESS: Sent data for file: {self.db.file_ids.get(f_id)} to {addr}")
-                    
+            if f_id is not None:
+                f_name = self.db.get_filename(f_id)
+                if f_name is not None:
+                    self.send_file_data(f_name, client_socket)
+                    logger.info(f"SUCCESS: Sent data for file: {self.db.file_ids.get(f_id)} to {addr}")                                        
                 else:
                     logger.warning(f"File data not found for requested id: {f_id} from {addr}")
             else:
-                 logger.warning(f"Received GET_FILE request without file_id from {addr}")
+                    logger.warning(f"Received GET_FILE request without file_id({f_id}) from {addr}")
 
-        elif msg_type == "FILE_DATA":    
-            try:
-                f_name = msg_obj["file_name"]
-                f_size = msg_obj["file_size"]
-                f_id = msg_obj["file_id"]
-                f_owner = msg_obj["file_owner"]
-                f_tstmp = msg_obj["file_timestamp"]
-                f_contnt = msg_obj["data"] 
-                um_id = self.args.um_id
-                
-                logger.info(f"Received FILE_DATA for '{f_name}' ({f_id}) from {addr}")
-                
-
-                if f_name and f_size and  f_id and f_owner and f_tstmp and f_contnt:
+        elif msg_type == "FILE_DATA":
+            required_fields = ["file_name", "file_size", "file_id", "file_owner", "file_timestamp", "data"]
+            
+            # Check if all required fields exist in the message
+            if all(field in msg_obj for field in required_fields):
+                try:
+                    f_name = msg_obj["file_name"]
+                    f_size = msg_obj["file_size"]
+                    f_id = msg_obj["file_id"]
+                    f_owner = msg_obj["file_owner"]
+                    f_tstmp = msg_obj["file_timestamp"]
+                    f_contnt = msg_obj["data"]
+                    um_id = self.args.um_id
+                    
+                    logger.info(f"Received FILE_DATA for '{f_name}' from {addr}")
+        
                     self.db.save_new_file(f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) 
                     self.send_announcement(um_id ,f_name, f_size, f_id, f_owner, f_tstmp)
                     logger.info(f"Successfully saved file: {f_name}")
-                else:
-                    logger.error(f"Incomplete FILE_DATA received from {addr}: Missing fields.")        
-
-            except KeyError as e:
-                logger.error(f"Missing key {e} in FILE_DATA received from {addr}: {msg_obj}")
-            except Exception as e:
-                logger.error(f"Error processing received FILE_DATA from {addr}: {e}", exc_info=True)
-
-
-        elif msg_type == "ANNOUNCE":                        
-            acc = msg_obj["from"]            
-            f_id = msg_obj["file_id"]            
-            f_name = msg_obj["file_name"]            
-            db_fname = self.db.file_ids.get(f_id)
-            
-            if f_id in self.db.db and f_name == db_fname: 
-                logger.info(f"{msg_type}: Stored {acc} has file {f_name}")
-                self.db.add_file_user(f_name, acc)
-
+                except Exception as e:
+                    logger.error(f"Error processing FILE_DATA message: {e}")    
+            else:
+                logger.error(f"Incomplete FILE_DATA received from {addr}: Missing fields.")        
+        
+        elif msg_type == "ANNOUNCE":
+            required_fields = ["from", "file_id", "file_name"]
+                
+            if all(field in msg_obj for field in required_fields):
+                try:
+                    acc = msg_obj["from"]
+                    f_id = msg_obj["file_id"]
+                    f_name = msg_obj["file_name"]                            
+                    db_fname = self.db.file_ids.get(f_id)
+                                        
+                    if  f_id in self.db.db and db_fname == f_name:
+                        logger.info(f"{msg_type}: Stored {acc} has file {f_name}")
+                        self.db.add_file_user(f_name, acc)
+                    else:
+                        logger.warning(f"File {f_name} with ID {f_id} not found in database or mismatch")
+                except Exception as e:
+                    logger.error(f"Error processing ANNOUNCE message: {e}")
+            else:                
+                missing_fields = [field for field in required_fields if field not in msg_obj]
+                logger.error(f"Incomplete ANNOUNCE message. Missing fields: {missing_fields}")
+        
+        
         elif msg_type == "DELETE":
-            logger.info(f"{msg_type} received from {addr}: {msg_obj}")
-            # TODO: Implement DELETE logic
+            required_fields = ["from", "file_id"]            
+            if all(field in msg_obj for field in required_fields):
+                try:
+                    from_usr = msg_obj["from"]
+                    file_id = msg_obj["file_id"]                    
+                    logger.info(f"{msg_type} received from {addr}: {msg_obj}")                                        
+                    file_owner_on_record = self.db.get_file_owner(file_id)                    
+                    if file_owner_on_record == from_usr:
+                        self.db.remove_file(file_id)
+                        logger.info(f"Successfully removed file: {file_id}")
+                    else:
+                        logger.error(f"Permission denied: File owner on record ({file_owner_on_record}) doesn't match the sender ({from_usr})")
+                except Exception as e:
+                    logger.error(f"Error processing DELETE message: {e}")
+            else:                
+                missing_fields = [field for field in required_fields if field not in msg_obj]
+                logger.error(f"Incomplete DELETE message from {addr}. Missing fields: {missing_fields}")
+        
             
         elif msg_type == "WEB_LIST":            
             original_list = self.db.db
@@ -370,32 +416,51 @@ class Peer_Protocol:
             self.send_ws_response(response_msg, client_socket)
             logger.info(f"{msg_type} : {response_msg}")
         elif msg_type == "WEB_DOWNLOAD":
-            pass
+            f_name = msg_obj.get("file_name")
+            f_data = self.db.get_file_data(f_name)
+            if f_data is not None: 
+                response_msg = {
+                    "status": "SUCCESS",
+                    "request_type": "GET",
+                    "message": f"{f_data}"
+                }
+            else: 
+                logger.error(f"f_data is None!")
+                response_msg = {
+                    "status": "ERROR",
+                    "request_type": "PUSH",
+                    "message": f"Failed to download file {f_id}."
+                }
+            self.send_ws_response(response_msg, client_socket)
+            
         
         elif msg_type == "WEB_UPLOAD":
             f_name = msg_obj.get("file_name")
             f_size = msg_obj.get("file_size")
             f_id = msg_obj.get("file_id")
             f_owner = msg_obj.get("file_owner")
-            f_timestamp = msg_obj.get("file_timestamp")
+            f_timestamp = int(msg_obj.get("file_timestamp"))
             f_cont = msg_obj.get("data")
 
             logger.info(f"Starting file upload: {f_name} ({f_size} bytes)")
 
-            self.buffer[f_name] = f_cont
-            received_bytes = len(f_cont)
-
-                    
-
+            
+            received_bytes = len(f_cont)                                            
+            response_msg = {
+                "status": "ERROR",
+                "request_type": "PUSH",
+                "message": f"Failed to upload file {f_name}."
+            }
             if received_bytes >= f_size:
-                logger.info(f"File {f_name} received successfully.")
-
                 # Save the file
-                f_owner = self.args.um_id
-                file_data = self.buffer[f_name]  
+                f_owner = self.args.um_id                
                 f_size = float(f_size) / (1024*1024)             
-                self.db.save_new_file(f_name, f_size, f_id, f_owner,f_timestamp, file_data)
+                
+                logger.info(f"File {f_name} received successfully with data: {f_size},  {f_id},  {f_owner},  {f_timestamp} , with size {f_size}")
+                
+                self.db.save_new_file(f_name, f_size, f_id, f_owner,f_timestamp, f_cont)
                 self.db.add_file_user(f_name, f_owner)
+                # self.db.add_file_owner(f_id, f_owner) # does it in the db.save_new_file()
                 self.send_announcement(f_owner, f_name, f_size, f_id, f_owner, f_timestamp)
                 response_msg = {
                     "status": "SUCCESS",
@@ -403,23 +468,73 @@ class Peer_Protocol:
                     "message": f"File {f_name} uploaded successfully!"
                 }
             else:
-                logger.error(f"Incomplete file received: expected {f_size}, got {received_bytes}")
-                response_msg = {
-                    "status": "ERROR",
-                    "request_type": "PUSH",
-                    "message": f"Failed to upload file {f_name}."
-                }
+                logger.error(f"Incomplete file received: expected {f_size}, got {received_bytes}")            
 
             self.send_ws_response(response_msg, client_socket)
+        elif msg_type == "WEB_DELETE":
+            f_name = msg_obj.get("file_name")
+            f_id = self.db.file_id_from_name(f_name)
+            response_msg = {
+                    "status": "ERROR",
+                    "request_type": "DELETE",
+                    "message": f"File {f_name} couldn't be deleted successfully!"
+            }
+            if f_name is not None and f_id is not None: 
+                stored_owner = self.db.get_file_owner(f_id)
+                logger.info(f"File owner for {f_name}: {stored_owner}")
+                if stored_owner != self.args.um_id: # basically if its not me
+                    response_msg = {
+                    "status": "ERROR",
+                    "request_type": "DELETE",
+                    "message": f"File {f_name} couldn't be deleted! Only owners can delete file!"
+                    }                                     
+                else:
+                    result = self.db.remove_file(f_id)
+                    if result: 
+                        logger.info("successfully removed file!")
+                        self.send_delete_message(f_id) # sends message to other clinets to delete
+                        response_msg = {
+                        "status": "SUCCESS",
+                        "request_type": "DELETE",
+                        "message": f"File {f_name} deleted successfully!"
+                        }
+                    else:
+                        logger.error("unsuccessfully to removed file!")                    
+            else:
+                logger.error("GOT a Delete request from web with empty filename!")
+            self.send_ws_response(response_msg, client_socket)
+            
         else:
             logger.warning(f"Received unknown message type '{msg_type}' from {addr}")
             
+        
+    def send_delete_message(self, f_id):
+        message = {
+           "type": "DELETE",
+            "from": self.args.um_id,
+            "file_id": f_id,
+        }
+        message = json.dumps(message).encode('utf-8')
+        f_name = self.db.file_ids.get(f_id)
+        if f_name is not None : 
+            client_with_file = self.db.get_peer_with_file(f_name)
+            for client in client_with_file: 
+                client_addr, client_port = self.get_peer_addr(client)
+                try:
+                
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:                    
+                        s.connect((client_addr, client_port))                                        
+                        s.sendall(message)                    
+                except Exception as e:
+                    print(f"Failed to send DELETE message to {client_addr}:{client_port}: {e}")
+            print(f"Sent DELETE message to {len(client_with_file)}")
+                 
             
     def send_ws_response(self, response: dict , ws_sock: socket.socket):
         try:
             reply_message  = json.dumps(response).encode("utf-8")
             ws_sock.sendall(reply_message)
-            logger.debug(f"Sent reply to web server: {reply_message}") 
+            logger.info(f"Sent reply to web server: {reply_message}") 
         except socket.error as e:
             logger.error(f"Socket error sending reply to web server {ws_sock.getpeername()}: {e}")
             self.cleanup_socket(ws_sock, "web server send error")
@@ -436,7 +551,7 @@ class Peer_Protocol:
             sock.connect((host, port))
             sock.sendall(message)
             
-    def send_announcement(self, from_id: str ,f_name: str, f_size: str, f_id: str , f_owner: str, f_timestamp: str) -> None:         
+    def send_announcement(self, from_id: str ,f_name: str, f_size: float, f_id: str , f_owner: str, f_timestamp: int) -> None:         
         message = {
            "type": "ANNOUNCE",
            "from": from_id,
@@ -453,20 +568,31 @@ class Peer_Protocol:
                 host, port = peer.split(":")
                 port = int(port)
                 self.send_message(host, port, message)
-                logger.info(f"Sent ANNOUNCE to {peer}")
+                # logger.info(f"Sent ANNOUNCE to {peer}")
             except Exception as e :
                 logger.error(f"Failed to send ANNOUNCE to {peer}:{e}")
         
         
     
-    def send_file_data(self, content: dict, c_socket: socket.socket) -> None:
+    def send_file_data(self, f_name, c_socket: socket.socket) -> None:
         """Send generic data (intended for FILE_DATA) on an existing connection."""
+        f_size, f_id, f_owner, f_timestamp, content  = self.db.get_file_info(f_name)
+        
+        content = {   
+            'type': 'FILE_DATA',
+            'file_name': f_name,
+            'file_size': float(f_size),
+            'file_id': f_id,
+            'file_owner': f_owner,
+            'file_timestamp': f_timestamp,
+            'data': content,
+        }
         if not c_socket:
-             logger.error("Attempted send_file_data with no socket.")
-             return
-        try:            
-            content.setdefault("type", "FILE_DATA")
-            message_bytes = json.dumps(content).encode('utf-8')            
+            logger.error("Attempted send_file_data with no socket.")
+            return
+        try:                        
+            message_bytes = json.dumps(content).encode('utf-8')     
+            logger.info(f'responsding to GET_FILE({f_name}) request for {c_socket}')       
             c_socket.sendall(message_bytes)
         except socket.error as e:
             logger.error(f"Socket error sending data to {c_socket.getpeername()}: {e}")            
@@ -484,7 +610,7 @@ class Peer_Protocol:
                 "port": self.args.port,
                 "peerId": self.args.um_id,
                 "files": self.db.db 
-            }
+            }            
             message_bytes = json.dumps(reply_message).encode('utf-8')
             reply_socket.sendall(message_bytes)
             # logger.info(f"Sent GOSSIP_REPLY regarding {gossip_id} to {host}:{port}")
@@ -541,9 +667,6 @@ class Peer_Protocol:
             if gossip_socket:
                 gossip_socket.close()
 
-    # ========================================================================
-    # Shutdown Logic
-    # ========================================================================
 
     def cleanup_all_sockets(self):
          """Close listener and all active client sockets."""

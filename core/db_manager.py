@@ -10,14 +10,26 @@ logger: LoggerClass = Logger(__name__).get_logger()
 
 class DB_Manager:
     def __init__(self, db_file: str, server_data: str):
-        # self.server_data = server_data
+        
         self._data_dir: str = os.path.join(os.getcwd(), server_data)
         self.db_dir: str = os.path.join(os.getcwd(), db_file)
-        self._db_data: None | dict = None
+        self._db_data: None | list = None        
         self.fm: "File_Manager" = File_Manager(server_data)
         self.file_ids: dict = {}  # store all the file IDs mapped to filenames
         self.client_with_files: dict[str, set] = {}  # file : [users]
         self._connect_to_db()
+        self.fileid_to_owner : dict[str, str] = {} # fileid : owner
+    
+    def get_file_owner(self, file_id) -> str:         
+        return self.fileid_to_owner.get(file_id)
+      
+    def add_file_owner(self, file_id:str, f_owner:str) -> None:
+        self.fileid_to_owner[file_id]=f_owner
+
+    def remove_file_owner(self, file_id) -> None:
+        if file_id in self.fileid_to_owner:
+            del self.fileid_to_owner[file_id]
+        
 
     def files_to_get(self, files):
         if not files:
@@ -176,31 +188,74 @@ class DB_Manager:
             return files
 
         return [file for file in files if file.get("file_id") != file_id_to_remove]
-
+    
     def remove_file(self, f_id: str):
+        
         if not f_id:
             logger.error("Invalid file_id: None or empty")
+            return False 
+        
+        if f_id in self.file_ids:            
+            f_name = self.file_ids.get(f_id) 
+            
+            if not f_name:
+                logger.error(f"Inconsistency: File ID {f_id} found but has no associated filename.")
+                return False
+
+            try:
+
+                if self.fm.delete_file(f_name):                    
+                    # Remove from the ID -> Name mapping
+                    del self.file_ids[f_id]
+
+                    #  Remove from the internal list representation of the DB
+                    self._db_data = self.__rm_file_by_id(self._db_data, f_id)
+                    
+                    # Remove from the File ID -> Owner mapping
+                    self.remove_file_owner(f_id) # Use the existing helper method
+
+                    #  Remove from the Filename -> Clients mapping
+                    if f_name in self.client_with_files:
+                        del self.client_with_files[f_name]
+
+
+
+                    # Attempt to save the updated in-memory DB list back to the JSON file
+                    if self.save_json(self._db_data, self.db_dir):
+                        logger.info(f"Successfully removed file {f_name} (ID: {f_id}) and updated DB.")
+                        return True # SUCCESS!
+                    else:
+                       
+                        logger.critical(f"CRITICAL ERROR: Deleted file {f_name} (ID: {f_id}) but FAILED TO SAVE updated database file ({self.db_dir}). Database state is now INCONSISTENT with filesystem.")
+                       
+                        return False
+                else:
+                    
+                    logger.error(
+                        f"Failed to delete physical file: {f_name} (ID: {f_id}). Aborting removal from database."
+                    )
+                    
+                    return False
+            except Exception as e:
+                
+                logger.error(f"Error during removal process for file {f_name} (ID: {f_id}): {str(e)}")
+                
+                return False
+        else:
+            
+            logger.error(
+                f"Request to remove file unsuccessful! File ID {f_id} does not exist in the database."
+            )
             return False
 
-        if f_id in self.file_ids:
-            f_name = self.file_ids.get(f_id)
-            try:
-                if self.fm.delete_file(f_name):
-                    self.file_ids.pop(f_id)  # remove the id
-                    self._db_data = self.__rm_file_by_id(self._db_data, f_id)
-                    return self.save_json(self._db_data, self.db_dir)
-                else:
-                    logger.error(
-                        f"Delete request unsuccessful! File doesn't exist: {f_name}"
-                    )
-            except Exception as e:
-                logger.error(f"Error while deleting file {f_name}: {str(e)}")
-        else:
-            logger.error(
-                f"Request to remove file unsuccessful! The {f_id} doesn't exist in the database"
-            )
-
-        return False
+    
+    
+    def file_id_from_name(self, file_name: str ):
+        file_id = None
+        for f_id, f_name in self.file_ids.items():
+                if f_name == file_name: 
+                    file_id = f_id
+        return file_id                
 
     def list_files(self):
         try:
@@ -210,20 +265,79 @@ class DB_Manager:
         except (IOError, json.JSONDecodeError) as e:
             logger.error(f"Error reading database file: {str(e)}")
             return []
-
-    
-                
-    def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) -> None:
         
-        if f_id not in self.file_ids:
-            inp_data = {
-                "file_name": f_name,
-                "file_size": f_size,
-                "file_id": f_id,
-                "file_owner": f_owner,
-                "file_timestamp": f_tstmp,
-            }
+    def get_filename(self, f_id :str) -> str | None:
+        return self.file_ids.get(f_id, None)
+    
+
+    def get_file_data(self,  f_name: str) -> str:        
+        if f_name is not None: 
+            f_data = self.fm.get_file(f_name) # hex data       
+        return f_data
+   
+    
+    def get_file_info(self, f_name:str)-> list[str|None,str|None,str|None,str|None,str|None]:        
+        # "file_name": "File name",
+        # "file_size": 123,
+        # "file_id": "Hash of the content + timestamp",
+        # "file_owner": "Owner ID",
+        # "file_timestamp": 123456,        
+        f_size, f_id , f_owner, f_timestamp, content =  None, None, None, None, None
+        for file in self.db:            
+            if file["file_name"] == f_name: 
+                f_size = file["file_size"] 
+                f_id = file["file_id"]
+                f_owner = file["file_id"]
+                f_timestamp = file["file_timestamp"]
+                content = self.get_file_data(f_name)
+        return f_size, f_id, f_owner, f_timestamp, content
+        
+    def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) -> None:
+
+        if f_id in self.file_ids:
+            logger.warning(f"Duplicate detected: file ID {f_id} already exists for file {self.file_ids[f_id]}. Skipping save.")
+            return
+
+        if any(file["file_name"] == f_name for file in self._db_data):
+            logger.warning(f"Duplicate detected: file name {f_name} already exists in the database. Skipping save.")
+            return
+
+        inp_data = {
+            "file_name": f_name,
+            "file_size": f_size,
+            "file_id": f_id,
+            "file_owner": f_owner,
+            "file_timestamp": f_tstmp,
+        }
+
+        try:
             self.fm.save_file(f_name, f_contnt)
+            self.add_file_owner(f_id, f_owner)
             self.file_ids[f_id] = f_name
             self._db_data.append(inp_data)
-            logger.info(f"SUCCESS : saved {f_name} into the database!")
+            if self.save_json(self._db_data, self.db_dir):
+                logger.info(f"SUCCESS: Saved {f_name} into the database!")
+            else:
+                logger.critical(f"CRITICAL ERROR: Saved file {f_name} (ID: {f_id}) but FAILED to update database file ({self.db_dir}). Database state is now INCONSISTENT with filesystem.")
+        except Exception as e:
+            logger.error(f"Error saving new file {f_name}: {str(e)}")
+          
+    # def save_new_file(self, f_name, f_size, f_id, f_owner, f_tstmp, f_contnt) -> None:
+        
+    #     if f_id not in self.file_ids:
+    #         inp_data = {
+    #             "file_name": f_name,
+    #             "file_size": f_size,
+    #             "file_id": f_id,
+    #             "file_owner": f_owner,
+    #             "file_timestamp": f_tstmp,
+    #         }
+    #         self.fm.save_file(f_name, f_contnt)
+    #         self.add_file_owner(f_id, f_owner)
+    #         self.file_ids[f_id] = f_name
+    #         self._db_data.append(inp_data)
+    #         if self.save_json(self._db_data, self.db_dir):
+    #             logger.info(f"SUCCESS : saved {f_name} into the database!")
+    #             # logger.info(f"Successfully Aded file {f_name} and updated DB.")                
+    #         else:                
+    #             logger.critical(f"CRITICAL ERROR: Deleted file {f_name} (ID: {f_id}) but FAILED TO SAVE updated database file ({self.db_dir}). Database state is now INCONSISTENT with filesystem.")

@@ -7,75 +7,10 @@
     <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
     <title>A3 P2P Network</title>
     <script>
-
-        let refreshIntervalId = null;
-        const REFRESH_INTERVAL_SECONDS = 15; 
-
-
-        function periodicRefresh() {
-            console.log(`Performing periodic refresh check at ${new Date().toLocaleTimeString()}`);
-        
-            var xhr = new XMLHttpRequest();
-            xhr.open("GET", "/api/session-status", true); // Endpoint to check login status
-            xhr.withCredentials = true;
-        
-            xhr.onreadystatechange = function () {
-                if (xhr.readyState === XMLHttpRequest.DONE) {
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        try {
-                            var data = JSON.parse(xhr.responseText);
-                            if (data.loggedIn) {
-                                // Session is active - Proceed with refreshing data
-                                console.log("Session active. Refreshing files and peers.");
-                                refreshFiles(); // Call function to refresh file list
-                                refreshPeers(); // Call function to refresh peer list
-                            } else {
-                                // Session is not active or expired
-                                console.log("Session expired or user logged out. Stopping refresh.");
-                                stopAutoRefresh(); // Stop the interval timer
-                                // Show login screen, hide content
-                                document.getElementById("login").classList.remove("hidden");
-                                document.getElementById("content").classList.add("hidden");
-                                // Optionally clear sessionStorage if needed
-                                // sessionStorage.removeItem('client_uname');
-                            }
-                        } catch (e) {
-                            console.error("Error parsing session status:", e);
-                            // Treat parsing error as a potential session issue, stop refresh
-                            stopAutoRefresh();
-                            document.getElementById("login").classList.remove("hidden");
-                            document.getElementById("content").classList.add("hidden");
-                        }
-                    } else if (xhr.status === 401 || xhr.status === 403) { // Unauthorized or Forbidden
-                        console.log("Session check failed (Unauthorized/Forbidden). Stopping refresh.");
-                        stopAutoRefresh();
-                        document.getElementById("login").classList.remove("hidden");
-                        document.getElementById("content").classList.add("hidden");
-                    } else {
-                        // Handle other potential HTTP errors during session check
-                        console.error("Session check failed with status:", xhr.status);
-                        // Decide if other errors should stop the refresh, maybe they should
-                        // stopAutoRefresh();
-                        // document.getElementById("login").classList.remove("hidden");
-                        // document.getElementById("content").classList.add("hidden");
-                    }
-                }
-            };
-        
-            xhr.onerror = function() {
-                console.error("Network error during periodic session check. Cannot determine session status.");
-                // It's often safer to stop refreshing if network errors prevent session checks
-                stopAutoRefresh();
-                // Consider showing a network error message to the user
-            };
-        
-            xhr.send();
-        }
-
+    
         function refreshPeers() {
-            // console.log("Refreshing peers list...");
+
         
-            // Get the table body element
             const peerTableBody = document.getElementById('peers-table-body');
             if (!peerTableBody) {
                 console.error("Peer table body element ('peers-table-body') not found!");
@@ -93,30 +28,26 @@
                         try {                            
                             const peers = JSON.parse(xhr.responseText.replace(/'/g, '"'));
                             console.log("Received peers data:", peers);
-        
-                            // Validate that the response is an array
+                
                             if (!Array.isArray(peers)) {
                                  console.error("Error: Expected an array of peers, but received:", typeof peers);
                                  peerTableBody.innerHTML = '<tr><td colspan="4" class="text-center text-red-500 py-4">Error loading peer list (Invalid format).</td></tr>';
                                  return;
                             }
         
-                            // Clear existing rows or loading message
-                            peerTableBody.innerHTML = '';
         
-                            // Handle empty peer list
+                            peerTableBody.innerHTML = '';                
                             if (peers.length === 0) {
                                 peerTableBody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-500 py-4">No active peers found.</td></tr>';
                                 return;
                             }
         
-                            // Populate table rows
                             peers.forEach(peer => {
-                                // Extract data, providing defaults for robustness
+                                
                                 const peerName = peer.peer_name || 'N/A';
                                 const host = peer.host || 'N/A';
                                 const port = peer.port || 'N/A';
-                                const lastSeenSeconds = peer.last_seen; // Get the raw number
+                                const lastSeenSeconds = peer.last_seen; 
         
                                 
                                 let lastSeenDisplay = 'N/A'; 
@@ -182,24 +113,8 @@
             xhr.send();
         }
         
-        function startAutoRefresh() {
-            
-            if (refreshIntervalId !== null) {
-                clearInterval(refreshIntervalId);
-            }
-            console.log(`Starting auto-refresh every ${REFRESH_INTERVAL_SECONDS} seconds.`);                    
-            periodicRefresh();                 
-            refreshIntervalId = setInterval(periodicRefresh, REFRESH_INTERVAL_SECONDS * 1000); // Convert seconds to milliseconds
-        }
-
-        // --- Function to stop the automatic refresh ---
-        function stopAutoRefresh() {
-            if (refreshIntervalId !== null) {
-                console.log("Stopping auto-refresh.");
-                clearInterval(refreshIntervalId);
-                refreshIntervalId = null;
-            }
-        }
+        
+        
 
 
         window.addEventListener("load", () => {
@@ -310,24 +225,30 @@
 
         function deleteFile(filename) {
             var xhr = new XMLHttpRequest();
-            xhr.open("DELETE", "/api/delete?file=" + encodeURIComponent(filename), true);
+            xhr.open("DELETE", "/api/delete", true);
             xhr.withCredentials = true;
-
+            xhr.setRequestHeader("X-File-Name", encodeURIComponent(filename));
+        
             xhr.onreadystatechange = function () {
                 if (xhr.readyState === XMLHttpRequest.DONE) {
                     if (xhr.status >= 200 && xhr.status < 300) {
                         console.log("File deleted successfully:", filename);
-                        refreshFiles()
+                        refreshFiles();
                     } else {
-                        const errorMessage = JSON.parse(xhr.responseText.replace(/'/g, '"'));
-                        // console.error("Error deleting file: HTTP Status", errorMessage.message);
-                        alert(`${errorMessage.message}`);
+                        try {
+                            const errorMessage = JSON.parse(xhr.responseText.replace(/'/g, '"'));
+                            alert(`${errorMessage.message}`);
+                        } catch (e) {
+                            console.error("Error deleting file, invalid response:", xhr.responseText);
+                            alert(`An error occurred while deleting the file.`);
+                        }
                     }
                 }
             };
-
+        
             xhr.send();
         }
+        
 
         
         function formatTimestamp(unixTimestamp) {
@@ -403,10 +324,10 @@
                                     </td>
                                     <td class="pr-4 py-2 whitespace-nowrap text-right w-32">
                                         <div class="flex flex-row items-center gap-x-6 justify-end">
-                                            <button onclick="downloadFile('${fileId}', '${fileName}')" class="cursor-pointer" title="Download ${fileName}">
+                                            <button onclick="downloadFile('${fileName}')" class="cursor-pointer" title="Download ${fileName}">
                                                 <i class="uil uil-import" style="font-size:1.4rem;"></i>
                                             </button>
-                                            <button onclick="deleteFile('${fileId}', '${fileName}')" class="cursor-pointer" title="Delete ${fileName}">
+                                            <button onclick="deleteFile('${fileName}')" class="cursor-pointer" title="Delete ${fileName}">
                                                 <i class="uil uil-trash text-red-600" style="font-size:1.4rem;"></i>
                                             </button>
                                         </div>
@@ -487,8 +408,14 @@
                     link.download = filename;
                     document.body.appendChild(link);
                     link.click();
+                    
+                    // Clean up!
+                    setTimeout(() => {
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(link);
+                    }, 0);
                 } else {
-                    console.error("Upload failed. Status:", xhr.status, xhr.statusText);
+                    console.error("Delete failed. Status:", xhr.status, xhr.statusText);
                 }
             };
             xhr.send();
@@ -521,10 +448,10 @@
 
                 xhr.open("POST", "/api/upload", true);
                 xhr.setRequestHeader("Content-Type", "application/octet-stream");
-                // xhr.setRequestHeader("X-File-Name", file.name);
+                
                 // --- Set Custom Metadata Headers ---                
                 xhr.setRequestHeader("X-File-Name", file.name);
-                xhr.setRequestHeader("X-File-Timestamp", file.lastModified.toString());                
+                xhr.setRequestHeader("X-File-Timestamp", Math.floor(file.lastModified / 1000).toString());                
                 xhr.setRequestHeader("X-File-Size", file.size.toString());                                
 
 
@@ -608,7 +535,7 @@
                         class="bg-pink-500 border-2 border-pink-500 hover:bg-white hover:text-pink-500 text-white px-3 py-0 rounded-md transition duration-300 ease-in-out flex items-center cursor-pointer">
                         <div class="flex flex-row gap-x-1 items-center">
                             <i class="uil uil-refresh" style="font-size:1.2rem;"></i>
-                            <span class="text-sm">Refresh</span>
+                            <span class="text-sm">Refresh Files</span>
                         </div>
 
                     </button>

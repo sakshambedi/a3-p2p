@@ -69,7 +69,7 @@ def valid_api_req(method: str, req: list[str], body: dict) -> bool:
         return True
     elif p == "upload" and method == "POST":
         return True
-    elif p.startswith("delete?file=") and method == "DELETE":
+    elif p == "delete" and method == "DELETE":
         return True
     elif p == "session-status" and method == "GET":
         return True

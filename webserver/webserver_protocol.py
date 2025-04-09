@@ -19,22 +19,22 @@ class webserver_protocol:
     def __init__(self, args) -> None:
         assert len(str(args.port)) >= 4, ""
         logger.info(f"Web Server initializing with args: {args}")
-        self.args = args # Store args if needed elsewhere
+        self.args = args 
         self._socket = self.setup_socket(args.host, args.port)
-
         
         self.index_path = os.path.join(os.getcwd(), "ui", "index.html")
         self.error404_path = os.path.join(os.getcwd(), "ui", "404.html")
         self.user_ids: set = set() # For session cookies
         self.logged_users: dict[str, str] = {} # {session_cookie: user_peer_id} - Map cookie to P2P ID
-        self.stored_files : dict[str, str ] = {} # stores:  file : session_cookie
+        self.stored_files : dict[str, set ] = {} # stores:  session_Cookie : files
         
         self.fs_lock = threading.Lock()
         self.fs_response_queue = Queue()
 
         self.index = open(os.path.join(os.getcwd(), "ui", "index.html")).read()
         self.error404 = open(os.path.join(os.getcwd(), "ui", "404.html")).read()
-        self.files_to_users : dict[str, str] = {} # maps filename: owner
+        self.files_to_users : dict[str, str] = {} 
+        self.partial_data = {}
         
         
         
@@ -60,27 +60,43 @@ class webserver_protocol:
             logger.error(f"Connection to file server at {fs_addr}:{fs_port} refused")
             raise
         return fs_socket
-
     
-    def send_p2p_command(self, command) -> Response | None:    
+    def is_full_json(self, data: bytearray) -> bool:
+        """Simple check to guess if the accumulated data forms a full JSON object."""
+        text = data.decode(errors="ignore")
+        return text.rstrip().endswith('}')
+
+
+    def send_p2p_command(self, command) -> Response | None:
         response_obj = None
         sock = None
         try:
-            
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5) 
+
             p2p_internal_host = self.args.fs_host 
             p2p_internal_port = self.args.fs_port 
             
-            sock.connect((p2p_internal_host, p2p_internal_port))
-            logger.debug(f"Connected to P2P internal listener at {p2p_internal_host}:{p2p_internal_port} for command.")            
-            sock.sendall(command.encode('utf-8'))            
-            response = sock.recv(8096).decode("utf-8")            
+            sock.connect((p2p_internal_host, p2p_internal_port))                        
+            sock.sendall(command.encode('utf-8'))                        
+
+            received_data = bytearray()
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:                    
+                    break
+                received_data.extend(chunk)
+                if self.is_full_json(received_data):
+                    break
+
+            if received_data:
+                response_str = received_data.decode("utf-8")
+                response_obj = Response.from_json(response_str)
             
-            if response is not None:
-                response = Response.from_json(response)
-                logger.info(f"Received response: {response}")
-            return response
-            
+            return response_obj
+        
+
+
         except socket.timeout:
             logger.error(f"Timeout connecting or communicating with P2P internal listener at {p2p_internal_host}:{p2p_internal_port}")
             return Response(ResponseStatus.ERROR, "Timeout communicating with P2P service")
@@ -89,18 +105,12 @@ class webserver_protocol:
             return Response(ResponseStatus.ERROR, "P2P service connection refused")
         except Exception as e:
             logger.error(f"Error in communication with P2P service: {e}", exc_info=True)
-            # Use isinstance to check for specific socket errors if needed
             if isinstance(e, (BrokenPipeError, ConnectionResetError)):
                 return Response(ResponseStatus.ERROR, "P2P connection reset/broken")
             return Response(ResponseStatus.ERROR, f"P2P communication error: {type(e).__name__}")
         finally:
-            if sock:
-                try:
-                    sock.close()
-                    logger.debug("Closed temporary socket to P2P internal listener.")
-                except Exception as e_close:
-                    logger.error(f"Error closing socket to P2P: {e_close}")
-            
+            if sock is not None:
+                sock.close()
 
 
     def run(self) -> None:
@@ -131,8 +141,7 @@ class webserver_protocol:
             data += packet
         return data
 
-    def handle_client(self, client_socket, client_address):
-        print(f"Connected to {client_address}")
+    def handle_client(self, client_socket, client_address):        
         try:
             # Read until the end of headers
             buffer = b""
@@ -204,7 +213,7 @@ class webserver_protocol:
             print(f"Error handling client {client_address}: {ex}")
         finally:
             client_socket.close()
-            print(f"Closed connection to {client_address}")
+            # print(f"Closed connection to {client_address}")
 
     def generate_cookie(self):
         new_id = str(uuid.uuid4())
@@ -277,9 +286,8 @@ class webserver_protocol:
             
             # Split all cookies by ";"
             cookies = dict(cookie.strip().split("=", 1) for cookie in user_cookie.split(";") if "=" in cookie)            
-            user_cookie = cookies.get("session_id", None)
+            user_cookie = cookies.get("session_id")
             
-
             logger.info(f"USER cookie for upload  : {user_cookie} ")
             f_owner = self.logged_users.get(user_cookie)
             f_name = header["X-File-Name"]
@@ -307,168 +315,61 @@ class webserver_protocol:
             
             if res.status == ResponseStatus.ERROR:
                 return http_responses.error400(res.message), True
-            return http_responses.success200(res.message), False
+            
+            if user_cookie not in self.stored_files: 
+                self.stored_files[user_cookie] =  set()
+            self.stored_files[user_cookie].add(f_name)
+            return http_responses.success200(res.message), True
 
         elif pth == "download":
-            f_name = header["X-File-Name"]
-            logger.info(f"Got req : {pth} : {f_name}")
+            file_name = header["X-File-Name"] # i 
+            logger.info(f"Got req : {pth} : {file_name}")
+            mess = {
+                    'type': 'WEB_DOWNLOAD',
+                    'file_name': file_name,                    
+            }            
+            message = json.dumps(mess)
+            res = self.send_p2p_command(message)
 
-            file_bin = self.download_file(f_name)
-            if not file_bin:
+            
+            if res.status == ResponseStatus.ERROR:            
                 return http_responses.error400(
                     f"Download failed for file  : {f_name}!"
                 ), True
 
+            file_bin = bytes.fromhex(res.message)
             return http_responses.success200filedownload(file_bin), False
 
                     
-        elif pth.startswith("delete?file="):
-            _, file = pth.split("?")
-            if not file.startswith("file="):
+        elif pth == "delete":
+            file_name = header["X-File-Name"] # i am getting ID by default
+            
+            if file_name is None:
                 return http_responses.error400(
                     f"Request missing the file name argument. Got : {pth}!"
                 ), True
-
-            _, f_name = file.split("=")
-            _, user = header["Cookie"].split("=")
-            delete_u_req = self.logged_users[user]
-
-            logger.info(
-                f"Request submitted by: '{delete_u_req}' to delete file: {f_name} "
-            )
-
-            # Send the delete message to the server
-            resp = self.send_fs_command(f"DELETE {f_name}|{delete_u_req}")
-
-            if resp.status == ResponseStatus.ERROR:
-                return http_responses.error400(resp.message), True
-            return http_responses.success200(), True
+                
+            user_cookie = header.get("Cookie")
+            cookies = dict(cookie.strip().split("=", 1) for cookie in user_cookie.split(";") if "=" in cookie)            
+            user_cookie = cookies.get("session_id")
+            
+            logger.info(f"USER_COOKIE: {user_cookie}")
+            
+            if user_cookie is None:
+                return http_responses.unauthorizedaccess401(b"No cookie present"), False
+                        
+            mess = {
+                    'type': 'WEB_DELETE',
+                    'file_name': file_name,                    
+            }
+            message = json.dumps(mess)
+            res = self.send_p2p_command(message)
+            if res.status == ResponseStatus.ERROR:
+                return http_responses.error400(res.message), True
+            return http_responses.success200(res.message), True
 
         else:
             return http_responses.error400(
                 "WEBserver doesnt know how to respond to this request!"
             ), True
-            
-    # def upload_file(self, f_name, f_size, f_id, f_owner, f_timestamp, content):
-    #     try:
-    #         # Create and connect
-    #         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)            
-    #         p2p_internal_host = self.args.fs_host 
-    #         p2p_internal_port = self.args.fs_port 
-    #         sock.connect((p2p_internal_host, p2p_internal_port))
-    #         logger.debug(f"Connected to P2P internal listener at {p2p_internal_host}:{p2p_internal_port} for upload.")
-            
-            
-    #         f_size = float(f_size) / (1024 * 1024)
-    #         d = {
-    #             'type': 'WEB_UPLOAD',
-    #             'file_name': f_name,
-    #             'file_size': str(f_size),
-    #             'file_id': f_id,
-    #             'file_owner': f_owner,
-    #             'file_timestamp': f_timestamp,
-    #             'data': ""
-    #         }            
-    #         string_representation = json.dumps(d)            
-    #         str_length = len(string_representation)
-            
-    #         chunk_size = 4096 - str_length - 1
-    #         offset = 0
-                                
-    #         while offset < len(content):
-    #             chunk = content[offset:offset + chunk_size] + "\n"
-    #             mess = {
-    #                 'type': 'WEB_UPLOAD',
-    #                 'file_name': f_name,
-    #                 'file_size': int(f_size),
-    #                 'file_id': f_id,
-    #                 'file_owner': f_owner,
-    #                 'file_timestamp': int(f_timestamp),
-    #                 'data': chunk
-    #             }
-    #             command = json.dumps(mess) 
-    #             logger.info(f"sending file: {command}")
-    #             sock.sendall(command.encode('utf-8'))
-    #             offset += chunk_size
-                
-    #         mess = {
-    #                 'type': 'WEB_UPLOAD',
-    #                 'file_name': f_name,
-    #                 'file_size': int(f_size),
-    #                 'file_id': f_id,
-    #                 'file_owner': f_owner,
-    #                 'file_timestamp': f_timestamp,
-    #                 'data': "DATA END"
-    #         }
-    #         command = json.dumps(mess)
-    #         sock.sendall(command.encode('utf-8'))            
-    #         response = sock.recv(4096).decode("utf-8")
-    #         logger.info(f"sending file: {command}")
-            
-    #         if response:
-    #             response = Response.from_json(response)
-    #             logger.info(f"Received response: {response}")
-    #         return response
-    #     except socket.timeout:
-    #         logger.error(f"Timeout connecting or communicating with P2P internal listener at {p2p_internal_host}:{p2p_internal_port}")
-    #         return Response(ResponseStatus.ERROR, "Timeout communicating with P2P service")
-    #     except ConnectionRefusedError:
-    #         logger.error(f"Connection refused by P2P internal listener at {p2p_internal_host}:{p2p_internal_port}")
-    #         return Response(ResponseStatus.ERROR, "P2P service connection refused")
-    #     except Exception as e:
-    #         logger.error(f"Error in communication with P2P service: {e}", exc_info=True)
-    #         if isinstance(e, (BrokenPipeError, ConnectionResetError)):
-    #             return Response(ResponseStatus.ERROR, "P2P connection reset/broken")
-    #         return Response(ResponseStatus.ERROR, f"P2P communication error: {type(e).__name__}")
-    #     finally:
-    #         if sock:
-    #             try:
-    #                 sock.close()
-    #                 logger.debug("Closed socket to P2P internal listener.")
-    #             except Exception as e_close:
-    #                 logger.error(f"Error closing socket to P2P: {e_close}")
-        
-    
-    def download_file(self, file_name: str) -> str:
-        _buff = ""
-        self._fs_socket.sendall(f"GET {file_name}".encode("utf-8"))
-
-        getting_file = True
-
-        while getting_file:
-            data = self._fs_socket.recv(4096).decode("utf-8").split("\n")
-            data = data[:-1] if data[-1] == "" else data
-
-            for incom_data in data:
-                line = incom_data.split(" ", 1)[-1]
-                logger.info(f"incoming data : {line}")
-                if line != "END":
-                    _buff += line
-                else:
-                    return base64.b64decode(_buff)
-
-    # def store_to_FileS(self, file_name: str, content: bytes, uaddr_uuid: str):
-    #     file_content = base64.b64encode(content)
-    #     filesize = len(file_content)
-    #     bytes_sent = 0
-
-    #     res = self.send_fs_command(f"PUSH {file_name} {filesize} {uaddr_uuid}\n")
-    #     if res.status == ResponseStatus.ERROR:
-    #         print(f"Server Denied Request to push the file : {file_name} to the server")
-    #         return res
-
-    #     while bytes_sent < filesize:
-    #         remaining = filesize - bytes_sent
-
-    #         chunk = file_content[bytes_sent : bytes_sent + min(4090, remaining)]
-
-    #         if not chunk:
-    #             break
-
-    #         header = b"DATA " + chunk + b"\n"
-    #         self._fs_socket.sendall(header)
-    #         bytes_sent += len(chunk)
-
-    #     res = self.send_fs_command("DATA END")
-
-    #     return res
+                    

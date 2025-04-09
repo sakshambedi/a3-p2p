@@ -1,6 +1,6 @@
 PORT = 8040
 HOST = ""
-UMNET_ID = sbedi 
+UMNET_ID = bedis3 
 LOG_LEVEL = INFO
 PEER = peer.py
 ENVIRONMENT = PROD
@@ -26,11 +26,13 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete	
 
-# Help message
+
 help:
 	@echo "P2P Network Client Makefile"
 	@echo "Usage:"
-	@echo "  make run              - Run client with default settings (port 8040, DEBUG level)"
-	@echo "  make run PORT=8080    - Run client on port 8080"
-	@echo "  make run LOG_LEVEL=INFO - Run client with INFO log level"
-	@echo "  make clean            - Remove Python cache files"
+	@echo "  make run                  - Run the peer client with default settings (port 8040, INFO log level, PROD environment)"
+	@echo "  make run PORT=<port>      - Run the peer client on a specified port"
+	@echo "  make run LOG_LEVEL=<lvl>  - Run the peer client with a specified log level (e.g., INFO, DEBUG)"
+	@echo "  make dev                  - Run the peer client in the DEV environment"
+	@echo "  make webserver            - Start the web server (run after starting the peer client)"
+	@echo "  make clean                - Remove Python cache files"
